@@ -1,0 +1,13 @@
+{
+  "name": "vps-resale-panel",
+  "version": "1.0.0",
+  "description": "- 产品定位：多上游优化 VPS **库存式转售** - PRD：`PRD-v0.1.md` - 数据模型/状态机/页面与 API：`DATA-MODEL-v0.1.md`",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
+}

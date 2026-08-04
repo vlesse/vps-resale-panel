@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>用户管理 · RenrenYings Cloud</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+  <style>
+    .usr-row { display:grid; grid-template-columns: 1.4fr 1fr 1fr auto; gap:12px; align-items:center; padding:12px 14px; border:1px solid var(--line); border-radius:12px; margin-bottom:8px; background:rgba(15,23,42,.55); }
+    .usr-row.disabled { opacity:.55; }
+    .usr-id { color:var(--muted); font-size:12px; }
+    .usr-email { font-weight:600; font-size:14px; word-break:break-all; }
+    .usr-name { color:#cbd5e1; font-size:13px; }
+    .usr-meta { font-size:12px; color:var(--muted); line-height:1.6; }
+    .usr-actions { display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; }
+    .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; }
+    .pill.admin { background:#7f1d1d; color:#fecaca; }
+    .pill.customer { background:#1e293b; color:#93c5fd; }
+    .pill.active { background:#064e3b; color:#a7f3d0; }
+    .pill.blocked { background:#3f1d1d; color:#fca5a5; }
+  </style>
+</head>
+<body>
+  <div class="admin-grid">
+    <aside class="side">
+      <div class="brand" style="margin-bottom:16px">Admin <span>Console</span></div>
+      <a href="/admin.html">库存管理</a>
+      <a href="/admin-users.html" class="active">用户管理</a>
+      <a href="/admin-pay-channels.html">支付接口</a>
+      <a href="/">返回前台</a>
+      <a href="/profile.html">资料设置</a>
+      <a href="#" onclick="clearAuth(); location.href='/login.html'">退出</a>
+      <p class="muted-text" style="margin-top:18px;font-size:12px" id="who"></p>
+    </aside>
+    <main class="main">
+      <h2>用户管理</h2>
+      <p class="muted-text">查看全部注册用户，修改昵称/手机/角色/状态，或重置密码。</p>
+      <div class="toolbar">
+        <button class="btn" onclick="loadUsers()">刷新</button>
+        <span class="hint-row" style="margin-left:auto">共 <b id="cnt">-</b> 个用户 · <b id="adminCnt">-</b> 管理员 · <b id="activeCnt">-</b> 活跃</span>
+      </div>
+      <div id="list">加载中…</div>
+      <div id="msg" class="msg"></div>
+
+      <!-- Edit modal -->
+      <div class="modal-bg" id="modalBg">
+        <div class="modal">
+          <h3 id="modalTitle">编辑用户</h3>
+          <form onsubmit="saveUser(event)">
+            <input type="hidden" id="f_id" />
+            <div class="grid2">
+              <div>
+                <label>邮箱 *</label>
+                <input id="f_email" required type="email" />
+              </div>
+              <div>
+                <label>昵称</label>
+                <input id="f_displayName" placeholder="可选" maxlength="64" />
+              </div>
+              <div>
+                <label>手机号</label>
+                <input id="f_phone" placeholder="可选" maxlength="32" />
+              </div>
+              <div>
+                <label>角色</label>
+                <select id="f_role">
+                  <option value="customer">customer（普通用户）</option>
+                  <option value="admin">admin（管理员）</option>
+                </select>
+              </div>
+              <div>
+                <label>状态</label>
+                <select id="f_status">
+                  <option value="active">active（正常）</option>
+                  <option value="blocked">blocked（封禁）</option>
+                </select>
+              </div>
+              <div>
+                <label>重置密码（留空不改）</label>
+                <input id="f_newPassword" type="password" placeholder="至少 8 位" autocomplete="new-password" minlength="8" />
+              </div>
+            </div>
+            <div class="form-actions" style="margin-top:14px">
+              <button class="btn primary" type="submit">保存</button>
+              <button class="btn ghost" type="button" onclick="closeModal()">取消</button>
+            </div>
+            <div id="fmsg" class="msg" style="margin-top:10px"></div>
+          </form>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="/assets/app.js?v=20260804a"></script>
+  <script>
+    let users = [];
+    let editingId = null;
+
+    function esc(s) { return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+    function fmt(s) { return s ? String(s).replace('T',' ').slice(0,19) : '-'; }
+
+    async function loadUsers() {
+      const msg = document.getElementById('msg');
+      try {
+        users = await api('/api/auth/users');
+        document.getElementById('cnt').textContent = users.length;
+        document.getElementById('adminCnt').textContent = users.filter(u => u.role === 'admin').length;
+        document.getElementById('activeCnt').textContent = users.filter(u => u.status === 'active').length;
+        render();
+      } catch (e) { showMsg(msg, e.message, 'err'); }
+    }
+
+    function render() {
+      const box = document.getElementById('list');
+      if (!users.length) {
+        box.innerHTML = '<div class="card">暂无注册用户。</div>';
+        return;
+      }
+      box.innerHTML = users.map(u => `
+        <div class="usr-row ${u.status === 'active' ? '' : 'disabled'}">
+          <div>
+            <div class="usr-id">#${u.id}</div>
+            <div class="usr-email">${esc(u.email)}</div>
+            <div class="usr-name">${esc(u.displayName || '(未设置昵称)')} ${u.phone ? '· ' + esc(u.phone) : ''}</div>
+          </div>
+          <div>
+            <span class="pill ${u.role}">${u.role === 'admin' ? '管理员' : '普通用户'}</span>
+            <span class="pill ${u.status}">${u.status === 'active' ? '正常' : '封禁'}</span>
+          </div>
+          <div class="usr-meta">
+            注册：${fmt(u.createdAt)}<br>
+            上次登录：${fmt(u.lastLoginAt)}
+          </div>
+          <div class="usr-actions">
+            <button class="btn sm" onclick="openEdit(${u.id})">编辑</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function openEdit(id) {
+      const u = users.find(x => String(x.id) === String(id));
+      if (!u) return;
+      editingId = id;
+      document.getElementById('modalTitle').textContent = '编辑用户 #' + u.id + ' · ' + u.email;
+      document.getElementById('f_id').value = u.id;
+      document.getElementById('f_email').value = u.email || '';
+      document.getElementById('f_displayName').value = u.displayName || '';
+      document.getElementById('f_phone').value = u.phone || '';
+      document.getElementById('f_role').value = u.role || 'customer';
+      document.getElementById('f_status').value = u.status || 'active';
+      document.getElementById('f_newPassword').value = '';
+      document.getElementById('fmsg').textContent = '';
+      document.getElementById('modalBg').classList.add('show');
+    }
+
+    function closeModal() {
+      document.getElementById('modalBg').classList.remove('show');
+      editingId = null;
+    }
+
+    async function saveUser(e) {
+      e.preventDefault();
+      const msg = document.getElementById('fmsg');
+      const body = {
+        email: document.getElementById('f_email').value.trim(),
+        displayName: document.getElementById('f_displayName').value.trim(),
+        phone: document.getElementById('f_phone').value.trim(),
+        role: document.getElementById('f_role').value,
+        status: document.getElementById('f_status').value,
+      };
+      const np = document.getElementById('f_newPassword').value;
+      if (np) body.newPassword = np;
+      showMsg(msg, '保存中…', '');
+      try {
+        await api('/api/auth/users/' + editingId, { method:'PATCH', body: JSON.stringify(body) });
+        showMsg(msg, '已保存', 'ok');
+        setTimeout(() => { closeModal(); loadUsers(); }, 500);
+      } catch (e2) {
+        showMsg(msg, e2.message, 'err');
+      }
+    }
+
+    document.addEventListener('DOMContentLoaded', async () => {
+      const me = await requireAdmin();
+      if (!me) return;
+      document.getElementById('who').textContent = (me.displayName || me.email) + ' · ' + me.role;
+      loadUsers();
+    });
+  </script>
+</body>
+</html>

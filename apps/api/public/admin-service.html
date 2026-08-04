@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>服务控制台(管理员) · RenrenYings Cloud</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+  <style>
+    .kv { display:grid; grid-template-columns: 140px 1fr; gap:8px 12px; font-size:14px; }
+    .kv div:nth-child(odd){ color: var(--muted); }
+    .ops { display:flex; flex-wrap:wrap; gap:10px; margin-top:14px; }
+    .block { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px; margin-bottom:14px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; white-space:pre-wrap; }
+    .warn { color:#fbbf24; font-size:13px; }
+  </style>
+</head>
+<body>
+  <div class="admin-grid">
+    <aside class="side">
+      <div class="brand" style="margin-bottom:16px">Admin <span>Console</span></div>
+      <a href="/admin.html">库存管理</a>
+      <a href="/admin-users.html">用户管理</a>
+      <a href="/admin-pay-channels.html">支付接口</a>
+      <a href="/admin-service.html" class="active">服务运维</a>
+      <a href="/">返回前台</a>
+      <a href="/profile.html">资料设置</a>
+      <a href="#" onclick="clearAuth(); location.href='/login.html'">退出</a>
+      <p class="muted-text" style="margin-top:18px;font-size:12px" id="who"></p>
+    </aside>
+    <main class="main">
+      <div id="box">加载中…</div>
+    </main>
+  </div>
+
+  <script src="/assets/app.js?v=20260804a"></script>
+  <script>
+    function sid() { return new URL(location.href).searchParams.get('id'); }
+
+    async function loadAdminServices() {
+      const box = document.getElementById('box');
+      if (!token()) { location.href = '/login.html?next=' + encodeURIComponent(location.pathname + location.search); return; }
+      const id = sid();
+      if (id) { await loadDetail(id); return; }
+      // list all services with control links
+      try {
+        const rows = await api('/api/admin/services');
+        if (!rows.length) { box.innerHTML = '<div class="card">暂无服务。</div>'; return; }
+        box.innerHTML = `<div class="section-head"><h2>服务运维</h2><p>管理员视角：对任意已交付服务执行状态/重启/改密/重装。</p></div>
+        <table class="table"><thead><tr><th>服务号</th><th>用户</th><th>套餐</th><th>IP</th><th>状态</th><th>到期</th><th>操作</th></tr></thead><tbody>
+        ${rows.map(s => `<tr>
+          <td>${s.serviceNo}</td>
+          <td>${s.user?.email || s.userId}</td>
+          <td>${s.plan?.name || s.planId}</td>
+          <td>${(s.deliverPayloadJson||{}).ip || (s.inventoryServer||{}).ip || '-'}</td>
+          <td>${statusBadge(s.status)}</td>
+          <td>${(s.expireAt||'').replace('T',' ').slice(0,19)}</td>
+          <td><a class="btn sm primary" href="/admin-service.html?id=${s.id}">控制台</a></td>
+        </tr>`).join('')}
+        </tbody></table>`;
+      } catch (e) { box.innerHTML = `<div class="card">加载失败：${e.message}</div>`; }
+    }
+
+    async function loadDetail(id) {
+      const box = document.getElementById('box');
+      try {
+        // admin uses the customer-facing service detail? No — that requires ownership.
+        // Use admin list and find by id.
+        const rows = await api('/api/admin/services');
+        const s = rows.find(x => String(x.id) === String(id));
+        if (!s) { box.innerHTML = '<div class="card">未找到该服务。</div>'; return; }
+        const access = s.deliverPayloadJson || {};
+        const server = s.inventoryServer || {};
+        const live = s.lastStatusJson || {};
+        box.innerHTML = `
+          <div class="section-head">
+            <h2>${s.plan?.name || 'VPS'} ${statusBadge(s.status)} <span class="pill" style="background:#7f1d1d;color:#fecaca">管理员运维</span></h2>
+            <p>服务号 ${s.serviceNo} · 用户 ${s.user?.email || s.userId} · 到期 ${(s.expireAt||'').replace('T',' ').slice(0,19)}</p>
+          </div>
+          <div class="block">
+            <h3 style="margin:0 0 12px">实例信息</h3>
+            <div class="kv">
+              <div>公网 IP</div><div>${access.ip || server.ip || '-'}</div>
+              <div>SSH</div><div class="mono">${access.username || 'root'}@${access.ip || server.ip}:${access.ssh_port || server.sshPort || 22}</div>
+              <div>密码</div><div class="mono">${access.password || '(仅密钥)'}</div>
+              <div>配置</div><div>${server.cpu||'-'}C / ${server.memoryMb||'-'}MB / ${server.diskGb||'-'}GB</div>
+              <div>地区/驱动</div><div>${server.region||'-'} · ${server.provider||'-'}</div>
+              ${access.notes ? `<div>说明</div><div>${access.notes}</div>` : ''}
+            </div>
+          </div>
+          <div class="block">
+            <h3 style="margin:0 0 12px">运维操作</h3>
+            <div class="ops">
+              <button class="btn primary" onclick="adminSvcAction('status-check','刷新状态')">刷新状态</button>
+              <button class="btn" onclick="adminSvcAction('reboot','重启')">重启</button>
+              <button class="btn" onclick="adminSvcReset()">重置密码</button>
+              <button class="btn danger" onclick="adminSvcReinstall()">重装初始化</button>
+            </div>
+            <p class="warn" id="capNote"></p>
+            <div id="msg" class="msg" style="margin-top:10px"></div>
+          </div>`;
+      } catch (e) { box.innerHTML = `<div class="card">加载失败：${e.message}</div>`; }
+    }
+
+    async function adminSvcAction(action, label) {
+      const id = sid(); const msg = document.getElementById('msg');
+      try {
+        showMsg(msg, label + ' 执行中…', '');
+        const res = await api(`/api/admin/services/${id}/${action}`, { method:'POST', body:'{}' });
+        showMsg(msg, label + ' 完成', 'ok');
+        if (action === 'status-check') { setTimeout(() => loadDetail(id), 600); }
+      } catch (e) { showMsg(msg, e.message, 'err'); }
+    }
+    async function adminSvcReset() {
+      const id = sid(); const msg = document.getElementById('msg');
+      const custom = prompt('输入新密码（留空自动生成，至少 8 位）', '');
+      if (custom === null) return;
+      try {
+        const body = custom.trim() ? { password: custom.trim() } : {};
+        const res = await api(`/api/admin/services/${id}/reset-password`, { method:'POST', body: JSON.stringify(body) });
+        const pwd = res.resultJson?.password || res.password;
+        showMsg(msg, '密码已重置：' + (pwd || '见结果'), 'ok');
+        alert('新密码：' + (pwd || '(见页面)'));
+      } catch (e) { showMsg(msg, e.message, 'err'); }
+    }
+    async function adminSvcReinstall() {
+      const id = sid(); const msg = document.getElementById('msg');
+      if (!confirm('确认执行重装？\nProxmox 有模板时会销毁并克隆重建；否则执行 SSH 基线初始化并重置密码。')) return;
+      const osTemplate = prompt('系统标签（记录用）', 'ubuntu-22.04') || 'ubuntu-22.04';
+      try {
+        showMsg(msg, '执行中，可能需要 1-2 分钟…', '');
+        const res = await api(`/api/admin/services/${id}/reinstall`, { method:'POST', body: JSON.stringify({ osTemplate }) });
+        const pwd = res.resultJson?.password;
+        showMsg(msg, '重装初始化完成' + (pwd ? ('，新密码：' + pwd) : ''), 'ok');
+        if (pwd) alert('新密码：' + pwd);
+        setTimeout(() => loadDetail(id), 800);
+      } catch (e) { showMsg(msg, e.message, 'err'); }
+    }
+
+    document.addEventListener('DOMContentLoaded', async () => {
+      const me = await requireAdmin();
+      if (!me) return;
+      document.getElementById('who').textContent = (me.displayName || me.email) + ' · ' + me.role;
+      loadAdminServices();
+    });
+  </script>
+</body>
+</html>

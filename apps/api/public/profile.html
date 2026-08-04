@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>资料设置 · RenrenYings Cloud</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+</head>
+<body>
+  <header class="top"><div class="wrap row between">
+    <a class="brand" href="/">RenrenYings <span>Cloud</span></a>
+    <nav class="nav">
+      <a href="/#plans">套餐</a>
+      <a href="/services.html">我的服务</a>
+      <span id="userSlot"></span>
+    </nav>
+  </div></header>
+
+  <section class="section">
+    <div class="wrap" style="max-width:720px">
+      <div class="section-head">
+        <h2>账户资料</h2>
+        <p>管理你的昵称、联系方式与登录密码。</p>
+      </div>
+
+      <div id="box">加载中…</div>
+    </div>
+  </section>
+
+  <script src="/assets/app.js?v=20260804a"></script>
+  <script>
+    async function loadProfile() {
+      const box = document.getElementById('box');
+      if (!token()) {
+        location.href = '/login.html?next=' + encodeURIComponent(location.pathname);
+        return;
+      }
+      try {
+        const me = await api('/api/auth/me');
+        localStorage.setItem('vr_user', JSON.stringify(me));
+        const verified = me.emailVerifiedAt ? '已验证' : '未验证';
+        const roleLabel = me.role === 'admin' ? '管理员' : '普通用户';
+        box.innerHTML = `
+          <div class="block" style="margin-bottom:16px">
+            <h3 style="margin:0 0 12px">账户信息</h3>
+            <div class="kv">
+              <div>邮箱</div><div>${me.email} <span class="badge ${me.emailVerifiedAt ? 'ready' : ''}">${verified}</span></div>
+              <div>角色</div><div>${roleLabel}</div>
+              <div>注册时间</div><div>${fmt(me.createdAt)}</div>
+              <div>上次登录</div><div>${me.lastLoginAt ? fmt(me.lastLoginAt) : '-'}</div>
+            </div>
+          </div>
+
+          <div class="block" style="margin-bottom:16px">
+            <h3 style="margin:0 0 12px">编辑资料</h3>
+            <form onsubmit="saveProfile(event)">
+              <label>昵称</label>
+              <input id="pName" value="${attr(me.displayName) || ''}" placeholder="可选" maxlength="64" />
+              <label>手机号</label>
+              <input id="pPhone" value="${attr(me.phone) || ''}" placeholder="可选" maxlength="32" />
+              <div class="form-actions">
+                <button class="btn primary" type="submit">保存资料</button>
+              </div>
+              <div id="pMsg" class="msg" style="margin-top:10px"></div>
+            </form>
+          </div>
+
+          <div class="block" style="margin-bottom:16px">
+            <h3 style="margin:0 0 12px">修改密码</h3>
+            <form onsubmit="changePwd(event)">
+              <label>当前密码</label>
+              <input id="oldPwd" type="password" required minlength="6" autocomplete="current-password" />
+              <label>新密码（至少 8 位）</label>
+              <input id="newPwd" type="password" required minlength="8" autocomplete="new-password" />
+              <label>确认新密码</label>
+              <input id="newPwd2" type="password" required minlength="8" autocomplete="new-password" />
+              <div class="form-actions">
+                <button class="btn primary" type="submit">修改密码</button>
+              </div>
+              <div id="cMsg" class="msg" style="margin-top:10px"></div>
+            </form>
+          </div>
+
+          <div class="block">
+            <h3 style="margin:0 0 12px">账号安全</h3>
+            <div class="kv">
+              <div>邮箱验证</div><div>${me.emailVerifiedAt
+                ? '<span class="badge ready">已验证</span>'
+                : '<span class="badge">未验证</span> <span class="muted-text">邮件验证即将开放</span>'}</div>
+              <div>账号状态</div><div><span class="badge ${me.status === 'active' ? 'ready' : ''}">${me.status}</span></div>
+            </div>
+            <p class="muted-text" style="margin-top:10px;font-size:13px">如需注销账号或重置二步验证，请联系客服。</p>
+          </div>
+        `;
+      } catch (e) {
+        box.innerHTML = `<div class="card">加载失败：${e.message}</div>`;
+      }
+    }
+
+    async function saveProfile(ev) {
+      ev.preventDefault();
+      const msg = document.getElementById('pMsg');
+      const displayName = document.getElementById('pName').value.trim();
+      const phone = document.getElementById('pPhone').value.trim();
+      try {
+        showMsg(msg, '保存中…', '');
+        await api('/api/auth/profile', {
+          method: 'PATCH',
+          body: JSON.stringify({ displayName, phone }),
+        });
+        showMsg(msg, '已保存', 'ok');
+        refreshUserNav();
+      } catch (e) { showMsg(msg, e.message, 'err'); }
+    }
+
+    async function changePwd(ev) {
+      ev.preventDefault();
+      const msg = document.getElementById('cMsg');
+      const oldPassword = document.getElementById('oldPwd').value;
+      const newPassword = document.getElementById('newPwd').value;
+      const newPassword2 = document.getElementById('newPwd2').value;
+      if (newPassword !== newPassword2) { showMsg(msg, '两次新密码不一致', 'err'); return; }
+      if (oldPassword === newPassword) { showMsg(msg, '新密码不能与旧密码相同', 'err'); return; }
+      try {
+        showMsg(msg, '修改中…', '');
+        await api('/api/auth/change-password', {
+          method: 'POST',
+          body: JSON.stringify({ oldPassword, newPassword }),
+        });
+        showMsg(msg, '密码已修改，请用新密码重新登录', 'ok');
+        document.getElementById('oldPwd').value = '';
+        document.getElementById('newPwd').value = '';
+        document.getElementById('newPwd2').value = '';
+        setTimeout(() => { clearAuth(); location.href = '/login.html'; }, 1600);
+      } catch (e) { showMsg(msg, e.message, 'err'); }
+    }
+
+    function attr(v) { return String(v ?? '').replace(/"/g, '&quot;'); }
+    function fmt(s) { return s ? String(s).replace('T',' ').slice(0,19) : '-'; }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      refreshUserNav();
+      loadProfile();
+    });
+  </script>
+</body>
+</html>

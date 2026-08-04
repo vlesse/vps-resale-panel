@@ -1,0 +1,312 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  customer
+  admin
+}
+
+enum UserStatus {
+  active
+  blocked
+}
+
+enum CurrencyCode {
+  CNY
+  USD
+}
+
+enum BillingCycle {
+  monthly
+}
+
+enum InventoryStatus {
+  sourcing
+  optimizing
+  ready
+  reserved
+  sold
+  suspended
+  recycling
+  retired
+}
+
+enum OrderStatus {
+  pending_payment
+  paid
+  provisioning
+  completed
+  cancelled
+  refunded
+  failed
+}
+
+enum PaymentStatus {
+  pending
+  success
+  failed
+}
+
+enum ServiceStatus {
+  pending
+  active
+  suspended
+  expired
+  cancelled
+  reinstalling
+  maintenance
+}
+
+enum ServiceActionType {
+  status_check
+  reboot
+  reset_password
+  reinstall
+  sync_info
+}
+
+enum ServiceActionStatus {
+  queued
+  running
+  success
+  failed
+}
+
+model User {
+  id              BigInt     @id @default(autoincrement())
+  email           String     @unique @db.VarChar(191)
+  passwordHash    String     @map("password_hash") @db.VarChar(255)
+  displayName     String?    @map("display_name") @db.VarChar(64)
+  phone           String?    @db.VarChar(32)
+  avatarUrl       String?    @map("avatar_url") @db.VarChar(255)
+  emailVerifiedAt DateTime?  @map("email_verified_at")
+  role            UserRole   @default(customer)
+  status          UserStatus @default(active)
+  lastLoginAt     DateTime?  @map("last_login_at")
+  createdAt       DateTime   @default(now()) @map("created_at")
+  updatedAt      DateTime   @updatedAt @map("updated_at")
+
+  orders   Order[]
+  services Service[]
+  logs     OperationLog[]
+
+  @@map("users")
+}
+
+model Plan {
+  id             BigInt   @id @default(autoincrement())
+  name           String   @db.VarChar(120)
+  slug           String   @unique @db.VarChar(120)
+  regionLabel    String   @map("region_label") @db.VarChar(64)
+  cpu            Int
+  memoryMb       Int      @map("memory_mb")
+  diskGb         Int      @map("disk_gb")
+  bandwidthLabel String?  @map("bandwidth_label") @db.VarChar(64)
+  description    String?  @db.Text
+  featuresJson   Json?    @map("features_json")
+  matchRulesJson Json?    @map("match_rules_json")
+  isEnabled      Boolean  @default(true) @map("is_enabled")
+  sortOrder      Int      @default(0) @map("sort_order")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  prices   PlanPrice[]
+  orders   Order[]
+  services Service[]
+
+  @@map("plans")
+}
+
+model PlanPrice {
+  id         BigInt       @id @default(autoincrement())
+  planId     BigInt       @map("plan_id")
+  cycle      BillingCycle @default(monthly)
+  priceCents Int          @map("price_cents")
+  currency   CurrencyCode
+  isEnabled  Boolean      @default(true) @map("is_enabled")
+  createdAt  DateTime     @default(now()) @map("created_at")
+  updatedAt  DateTime     @updatedAt @map("updated_at")
+
+  plan   Plan    @relation(fields: [planId], references: [id])
+  orders Order[]
+
+  @@unique([planId, cycle, currency])
+  @@map("plan_prices")
+}
+
+model InventoryServer {
+  id                     BigInt          @id @default(autoincrement())
+  code                   String          @unique @db.VarChar(64)
+  provider               String          @db.VarChar(32)
+  providerRef            String?         @map("provider_ref") @db.VarChar(128)
+  ip                     String          @db.VarChar(64)
+  sshPort                Int             @default(22) @map("ssh_port")
+  authPayloadEncrypted   String          @map("auth_payload_encrypted") @db.Text
+  cpu                    Int
+  memoryMb               Int             @map("memory_mb")
+  diskGb                 Int             @map("disk_gb")
+  region                 String          @db.VarChar(64)
+  optimizeTagsJson       Json?           @map("optimize_tags_json")
+  costCents              Int?            @map("cost_cents")
+  currency               CurrencyCode?   @default(CNY)
+  upstreamExpireAt       DateTime?       @map("upstream_expire_at")
+  status                 InventoryStatus @default(sourcing)
+  reservedOrderId        BigInt?         @map("reserved_order_id")
+  soldServiceId          BigInt?         @map("sold_service_id")
+  notes                  String?         @db.Text
+  optimizedChecklistJson Json?           @map("optimized_checklist_json")
+  createdAt              DateTime        @default(now()) @map("created_at")
+  updatedAt              DateTime        @updatedAt @map("updated_at")
+
+  reservedOrder Order?   @relation("OrderReservedInventory", fields: [reservedOrderId], references: [id])
+  orders        Order[]  @relation("OrderAssignedInventory")
+  service       Service?
+
+  @@index([status, region])
+  @@index([upstreamExpireAt])
+  @@map("inventory_servers")
+}
+
+model Order {
+  id                BigInt       @id @default(autoincrement())
+  orderNo           String       @unique @map("order_no") @db.VarChar(64)
+  userId            BigInt       @map("user_id")
+  planId            BigInt       @map("plan_id")
+  planPriceId       BigInt       @map("plan_price_id")
+  cycle             BillingCycle @default(monthly)
+  amountCents       Int          @map("amount_cents")
+  currency          CurrencyCode
+  status            OrderStatus  @default(pending_payment)
+  payChannel        String?      @map("pay_channel") @db.VarChar(32)
+  paidAt            DateTime?    @map("paid_at")
+  inventoryServerId BigInt?      @map("inventory_server_id")
+  clientRemark      String?      @map("client_remark") @db.VarChar(255)
+  adminRemark       String?      @map("admin_remark") @db.VarChar(255)
+  createdAt         DateTime     @default(now()) @map("created_at")
+  updatedAt         DateTime     @updatedAt @map("updated_at")
+
+  user             User              @relation(fields: [userId], references: [id])
+  plan             Plan              @relation(fields: [planId], references: [id])
+  planPrice        PlanPrice         @relation(fields: [planPriceId], references: [id])
+  inventoryServer  InventoryServer?  @relation("OrderAssignedInventory", fields: [inventoryServerId], references: [id])
+  reservedBy       InventoryServer[] @relation("OrderReservedInventory")
+  payments         Payment[]
+  service          Service?
+
+  @@index([userId, status])
+  @@index([status, createdAt])
+  @@map("orders")
+}
+
+model Payment {
+  id            BigInt        @id @default(autoincrement())
+  orderId       BigInt        @map("order_id")
+  paymentNo     String        @unique @map("payment_no") @db.VarChar(64)
+  channel       String        @db.VarChar(32)
+  wayCode       String?       @map("way_code") @db.VarChar(32)
+  amountCents   Int           @map("amount_cents")
+  currency      CurrencyCode
+  status        PaymentStatus @default(pending)
+  jeepayPayOrderId String?    @map("jeepay_pay_order_id") @db.VarChar(64)
+  rawNotifyJson Json?         @map("raw_notify_json")
+  paidAt        DateTime?     @map("paid_at")
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+
+  order Order @relation(fields: [orderId], references: [id])
+
+  @@index([orderId])
+  @@map("payments")
+}
+
+model Service {
+  id                  BigInt        @id @default(autoincrement())
+  serviceNo           String        @unique @map("service_no") @db.VarChar(64)
+  userId              BigInt        @map("user_id")
+  orderId             BigInt        @unique @map("order_id")
+  planId              BigInt        @map("plan_id")
+  inventoryServerId   BigInt        @unique @map("inventory_server_id")
+  status              ServiceStatus @default(pending)
+  startAt             DateTime?     @map("start_at")
+  expireAt            DateTime      @map("expire_at")
+  deliverPayloadJson  Json          @map("deliver_payload_json")
+  lastStatusJson      Json?         @map("last_status_json")
+  lastCheckedAt       DateTime?     @map("last_checked_at")
+  osTemplate          String?       @map("os_template") @db.VarChar(64)
+  createdAt           DateTime      @default(now()) @map("created_at")
+  updatedAt           DateTime      @updatedAt @map("updated_at")
+
+  user            User            @relation(fields: [userId], references: [id])
+  order           Order           @relation(fields: [orderId], references: [id])
+  plan            Plan            @relation(fields: [planId], references: [id])
+  inventoryServer InventoryServer @relation(fields: [inventoryServerId], references: [id])
+  actions         ServiceAction[]
+
+  @@index([userId, status])
+  @@index([expireAt, status])
+  @@map("services")
+}
+
+model ServiceAction {
+  id           BigInt              @id @default(autoincrement())
+  serviceId    BigInt              @map("service_id")
+  userId       BigInt              @map("user_id")
+  action       ServiceActionType
+  status       ServiceActionStatus @default(queued)
+  requestJson  Json?               @map("request_json")
+  resultJson   Json?               @map("result_json")
+  errorMessage String?             @map("error_message") @db.VarChar(500)
+  createdAt    DateTime            @default(now()) @map("created_at")
+  finishedAt   DateTime?           @map("finished_at")
+
+  service Service @relation(fields: [serviceId], references: [id])
+
+  @@index([serviceId, createdAt])
+  @@map("service_actions")
+}
+
+model PayChannel {
+  id                   BigInt   @id @default(autoincrement())
+  code                 String   @unique @db.VarChar(48)
+  name                 String   @db.VarChar(120)
+  icon                 String   @db.VarChar(32)
+  channel              String   @db.VarChar(24)
+  wayCode              String   @db.VarChar(48)
+  settleCurrency       String?  @db.VarChar(16)
+  gatewayUrl           String?  @db.VarChar(255)
+  credentialsEncrypted String   @map("credentials_encrypted") @db.Text
+  rate                 Float?
+  usdToCnyRate         Float?   @map("usd_to_cny_rate")
+  isEnabled            Boolean  @default(true) @map("is_enabled")
+  sortOrder            Int      @default(0) @map("sort_order")
+  descText             String?  @map("desc_text") @db.VarChar(255)
+  notes                String?  @db.Text
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  @@map("pay_channels")
+}
+
+model OperationLog {
+  id         BigInt   @id @default(autoincrement())
+  actorType  String   @map("actor_type") @db.VarChar(16)
+  actorId    BigInt?  @map("actor_id")
+  action     String   @db.VarChar(64)
+  targetType String?  @map("target_type") @db.VarChar(32)
+  targetId   BigInt?  @map("target_id")
+  ip         String?  @db.VarChar(64)
+  metaJson   Json?    @map("meta_json")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [actorId], references: [id])
+
+  @@index([targetType, targetId])
+  @@index([createdAt])
+  @@map("operation_logs")
+}

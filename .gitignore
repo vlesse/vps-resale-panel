@@ -1,0 +1,68 @@
+# Dependencies
+node_modules/
+apps/api/node_modules/
+apps/web/node_modules/
+
+# Build output
+dist/
+apps/api/dist/
+apps/web/dist/
+build/
+
+# Test coverage
+coverage/
+*.lcov
+
+# Environment & secrets (never commit)
+.env
+.env.local
+.env.*.local
+apps/api/.env
+apps/api/.env.local
+
+# Deployment artifacts
+*.tgz
+*.tar.gz
+deploy-baidu-live.txt
+
+# Infra-specific local files (contain real credentials)
+docs/pve-panel-token.local.json
+docs/pve-guest-101.id_rsa
+docs/pve-guest-101.id_rsa.pub
+docs/PVE-PANEL-LINK-STATUS.md
+
+# One-off infra setup scripts (embed real server credentials)
+scripts/
+
+# Debug / scratch files
+cap*.svg
+cap_page.html
+cap_view.html
+jstest.html
+crashtest.html
+svc.html
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Prisma generated client (regenerated on install)
+apps/api/node_modules/.prisma/
+
+# NestJS cache
+apps/api/.nest/
+
+# TypeScript build info
+*.tsbuildinfo

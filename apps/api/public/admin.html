@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>管理后台 · RenrenYings Cloud</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+  <style>
+    .provider-box { border:1px dashed var(--line); border-radius:12px; padding:12px; margin-top:10px; }
+    .hint { color:var(--muted); font-size:12px; margin:6px 0 0; }
+  </style>
+</head>
+<body>
+  <div class="admin-grid">
+    <aside class="side">
+      <div class="brand" style="margin-bottom:16px">Admin <span>Console</span></div>
+      <a href="#inventory" class="active" onclick="showPane('inventory')">库存管理</a>
+      <a href="#orders" onclick="showPane('orders')">订单</a>
+      <a href="#plans" onclick="showPane('plans')">新建套餐</a>
+      <a href="/admin-users.html">用户管理</a>
+      <a href="/admin-service.html">服务运维</a>
+      <a href="/admin-pay-channels.html">支付接口</a>
+      <a href="/">返回前台</a>
+      <a href="/profile.html">资料设置</a>
+      <a href="#" onclick="clearAuth(); location.href='/login.html'">退出</a>
+      <p class="muted-text" style="margin-top:18px;font-size:12px" id="who"></p>
+    </aside>
+    <main class="main">
+      <section id="pane-inventory">
+        <h2>库存机</h2>
+        <p class="muted-text">支持两种入库：SSH 成品机（转售）/ Proxmox 虚拟机（自建）。标为 ready 后可被下单分配。</p>
+        <form class="card" style="margin-bottom:16px" onsubmit="adminCreateInventory(event)">
+          <div class="grid2">
+            <div><label>内部编号 code</label><input id="code" required placeholder="PVE-101" /></div>
+            <div>
+              <label>控制驱动 provider</label>
+              <select id="provider" onchange="toggleProviderFields()">
+                <option value="ssh">ssh（成品机 / SSH 运维）</option>
+                <option value="proxmox">proxmox（自建 PVE API）</option>
+              </select>
+            </div>
+            <div><label>客户访问 IP</label><input id="ip" required placeholder="公网或内网 IP" /></div>
+            <div><label>SSH 端口</label><input id="sshPort" value="22" /></div>
+            <div><label>客户机用户名</label><input id="username" value="root" /></div>
+            <div><label>客户机密码（SSH 回退/交付）</label><input id="password" type="password" /></div>
+            <div><label>CPU</label><input id="cpu" type="number" value="2" /></div>
+            <div><label>内存 MB</label><input id="memoryMb" type="number" value="2048" /></div>
+            <div><label>磁盘 GB</label><input id="diskGb" type="number" value="40" /></div>
+            <div><label>地区 region</label><input id="region" required placeholder="local-pve" /></div>
+          </div>
+          <label>优化标签（逗号分隔）</label>
+          <input id="tags" placeholder="bbr,cn-optimized" />
+
+          <div id="pveBox" class="provider-box" hidden>
+            <h4 style="margin:0 0 8px">Proxmox 连接</h4>
+            <p class="hint">Token 推荐：Datacenter → Permissions → API Tokens。权限至少含 VM.Audit / VM.PowerMgmt / VM.Config.* / VM.Clone（重装）</p>
+            <div class="grid2">
+              <div><label>PVE Host</label><input id="pveHost" placeholder="192.168.1.10" /></div>
+              <div><label>PVE Port</label><input id="pvePort" value="8006" /></div>
+              <div><label>Node 名</label><input id="pveNode" placeholder="pve" /></div>
+              <div><label>VMID</label><input id="pveVmid" type="number" placeholder="101" /></div>
+              <div><label>Token ID</label><input id="pveTokenId" placeholder="root@pam!panel" /></div>
+              <div><label>Token Secret</label><input id="pveTokenSecret" type="password" /></div>
+              <div><label>模板 VMID（重装用，可选）</label><input id="pveTemplate" type="number" placeholder="9000" /></div>
+              <div><label>Clone 存储 storage（可选）</label><input id="pveStorage" placeholder="local-lvm" /></div>
+              <div><label>cloud-init ipconfig0（可选）</label><input id="pveIpconfig" placeholder="ip=10.0.0.50/24,gw=10.0.0.1" /></div>
+              <div><label>nameserver（可选）</label><input id="pveDns" placeholder="8.8.8.8" /></div>
+            </div>
+            <p class="hint">也可不填 Token，改用下方 API 用户密码（不推荐）。</p>
+            <div class="grid2">
+              <div><label>API 用户</label><input id="pveApiUser" placeholder="root@pam" /></div>
+              <div><label>API 密码</label><input id="pveApiPass" type="password" /></div>
+            </div>
+          </div>
+
+          <div class="form-actions"><button class="btn primary" type="submit">添加并标 ready</button></div>
+          <div id="msg" class="msg"></div>
+        </form>
+        <div id="invTable">加载中...</div>
+      </section>
+
+      <section id="pane-orders" hidden>
+        <h2>订单</h2>
+        <div class="toolbar"><button class="btn" onclick="adminLoadOrders()">刷新</button></div>
+        <div id="orderTable">加载中...</div>
+      </section>
+
+      <section id="pane-plans" hidden>
+        <h2>新建套餐</h2>
+        <form class="card" onsubmit="adminCreatePlan(event)">
+          <div class="grid2">
+            <div><label>名称</label><input id="name" required /></div>
+            <div><label>slug</label><input id="slug" required placeholder="us-2c2g" /></div>
+            <div><label>地区展示</label><input id="regionLabel" required placeholder="US West" /></div>
+            <div><label>匹配 region 列表</label><input id="matchRegions" placeholder="us-west,local-pve" /></div>
+            <div><label>CPU</label><input id="cpu" type="number" value="2" /></div>
+            <div><label>内存 MB</label><input id="memoryMb" type="number" value="2048" /></div>
+            <div><label>磁盘 GB</label><input id="diskGb" type="number" value="40" /></div>
+            <div><label>带宽文案</label><input id="bandwidthLabel" value="1Gbps" /></div>
+            <div><label>CNY 月价（元）</label><input id="priceCny" type="number" step="0.01" value="99" /></div>
+            <div><label>USD 月价（美元）</label><input id="priceUsd" type="number" step="0.01" value="15" /></div>
+          </div>
+          <label>描述</label>
+          <textarea id="description" rows="3"></textarea>
+          <div class="form-actions"><button class="btn primary" type="submit">创建套餐</button></div>
+          <div id="msg" class="msg"></div>
+        </form>
+      </section>
+    </main>
+  </div>
+  <script src="/assets/app.js?v=20260804a"></script>
+  <script>
+    function toggleProviderFields() {
+      const p = document.getElementById('provider').value;
+      document.getElementById('pveBox').hidden = p !== 'proxmox';
+    }
+    function showPane(name) {
+      ['inventory','orders','plans'].forEach(n => {
+        const el = document.getElementById('pane-' + n);
+        if (el) el.hidden = n !== name;
+      });
+      if (name === 'inventory') adminLoadInventory();
+      if (name === 'orders') adminLoadOrders();
+    }
+    document.addEventListener('DOMContentLoaded', async () => {
+      const me = await requireAdmin();
+      if (!me) return;
+      document.getElementById('who').textContent = (me.displayName || me.email) + ' · ' + me.role;
+      toggleProviderFields();
+      showPane('inventory');
+    });
+  </script>
+</body>
+</html>

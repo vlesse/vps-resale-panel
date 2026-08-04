@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>ABA 扫码支付 · 请输入瑞尔金额</title>
+  <script src="/assets/qrcode.min.js"></script>
+  <style>
+    :root {
+      --bg: #0b1220;
+      --card: #121a2b;
+      --text: #e8eefc;
+      --muted: #8fa0bf;
+      --danger: #ff4d4f;
+      --warn: #faad14;
+      --ok: #52c41a;
+      --accent: #3b82f6;
+      --border: #243049;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: radial-gradient(1000px 520px at 50% -12%, #1d3b66 0%, var(--bg) 55%);
+      color: var(--text);
+      padding: 16px;
+    }
+    .wrap { max-width: 440px; margin: 0 auto; padding-bottom: 40px; }
+    .badge {
+      display: inline-block;
+      background: rgba(255, 77, 79, 0.15);
+      color: var(--danger);
+      border: 1px solid rgba(255, 77, 79, 0.45);
+      border-radius: 999px;
+      padding: 4px 12px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    h1 { font-size: 20px; margin: 12px 0 8px; line-height: 1.35; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 18px;
+      margin-top: 14px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.25);
+    }
+    .amount-box { text-align: center; padding: 8px 0 4px; }
+    .amount-label { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
+    .amount-khr {
+      font-size: 36px; font-weight: 800; color: var(--danger);
+      line-height: 1.15; word-break: break-all;
+    }
+    .amount-khr small { font-size: 16px; font-weight: 600; margin-left: 4px; color: #ff7875; }
+    .copy-btn, .status-btn {
+      margin-top: 12px; width: 100%; border: 0; border-radius: 10px;
+      padding: 12px 14px; background: var(--danger); color: #fff;
+      font-size: 15px; font-weight: 700; cursor: pointer;
+    }
+    .status-btn { background: var(--accent); margin-top: 8px; }
+    .hint-ok { display: none; margin-top: 8px; text-align: center; color: var(--ok); font-size: 13px; }
+    .pay-status { margin-top: 12px; text-align: center; font-size: 14px; color: var(--warn); min-height: 22px; }
+    .pay-status.ok { color: var(--ok); font-weight: 700; }
+    .qr-wrap { display: flex; justify-content: center; margin: 8px 0 4px; }
+    #qrcode { background: #fff; padding: 12px; border-radius: 12px; }
+    #qrcode canvas, #qrcode img { display: block; width: 240px !important; height: 240px !important; }
+    .calc { font-size: 14px; line-height: 1.7; }
+    .calc .row {
+      display: flex; justify-content: space-between; gap: 12px;
+      padding: 6px 0; border-bottom: 1px dashed var(--border);
+    }
+    .calc .row:last-child { border-bottom: 0; }
+    .calc .k { color: var(--muted); }
+    .calc .v { font-weight: 600; text-align: right; }
+    .warn {
+      margin-top: 12px; background: rgba(250, 173, 20, 0.1);
+      border: 1px solid rgba(250, 173, 20, 0.35); border-radius: 12px;
+      padding: 12px 14px; color: #ffe58f; font-size: 13px; line-height: 1.65;
+    }
+    .steps { margin: 0; padding-left: 18px; color: var(--muted); font-size: 13px; line-height: 1.75; }
+    .footer { margin-top: 16px; text-align: center; color: var(--muted); font-size: 12px; }
+    .err {
+      background: rgba(255,77,79,.12); border: 1px solid rgba(255,77,79,.4);
+      color: #ffccc7; padding: 14px; border-radius: 12px; margin-top: 16px;
+    }
+    .success-overlay {
+      display: none; position: fixed; inset: 0; background: rgba(0,0,0,.72);
+      z-index: 99; align-items: center; justify-content: center; padding: 20px;
+    }
+    .success-overlay.show { display: flex; }
+    .success-box {
+      background: var(--card); border: 1px solid var(--ok); border-radius: 16px;
+      padding: 28px 22px; max-width: 360px; width: 100%; text-align: center;
+    }
+    .success-box h2 { margin: 0 0 8px; color: var(--ok); font-size: 22px; }
+    .success-box p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.6; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <span class="badge">重要 · 请手动输入瑞尔金额</span>
+    <h1>ABA KHQR 扫码支付</h1>
+    <p style="margin:0;color:var(--muted);font-size:13px;line-height:1.6">
+      本二维码为<strong style="color:#fff">固定商业码</strong>，无法自动带入金额。
+      请用 <strong style="color:#fff">支付宝</strong> 扫码后，在金额框
+      <strong style="color:var(--danger)">原样输入下面瑞尔数字</strong>。
+      套餐标价是人民币/美元，实际付款币种是瑞尔。
+    </p>
+
+    <div id="main" style="display:none">
+      <div class="card amount-box">
+        <div class="amount-label">请在支付宝 App 中输入（币种：瑞尔 KHR）</div>
+        <div class="amount-khr">
+          <span id="khrText">-</span><small>KHR</small>
+        </div>
+        <button class="copy-btn" type="button" id="copyBtn">一键复制瑞尔金额</button>
+        <div class="hint-ok" id="copied">已复制，请粘贴到支付宝付款金额框</div>
+        <div class="pay-status" id="payStatus">正在等待支付到账…</div>
+        <button class="status-btn" type="button" id="openOrderBtn" style="display:none">查看结果</button>
+      </div>
+
+      <div class="card">
+        <div class="qr-wrap"><div id="qrcode"></div></div>
+        <p style="text-align:center;margin:8px 0 0;color:var(--muted);font-size:12px">请使用支付宝 App 扫码</p>
+      </div>
+
+      <div class="card calc">
+        <div class="row"><span class="k">套餐标价</span><span class="v" id="listText">-</span></div>
+        <div class="row"><span class="k">约合人民币</span><span class="v" id="cnyText">-</span></div>
+        <div class="row"><span class="k">汇率</span><span class="v" id="rateText">-</span></div>
+        <div class="row"><span class="k">换算公式</span><span class="v" id="formulaText">-</span></div>
+        <div class="row"><span class="k">应付瑞尔</span><span class="v" style="color:var(--danger)" id="khrText2">-</span></div>
+        <div class="row" id="expectRow" style="display:none">
+          <span class="k">系统匹配金额</span>
+          <span class="v" style="color:var(--warn)" id="expectText">-</span>
+        </div>
+      </div>
+
+      <div class="warn">
+        <strong>务必注意：</strong><br>
+        1. 金额币种是 <strong>瑞尔（KHR）</strong>，不要输入人民币/美元数字。<br>
+        2. 数字必须与上方完全一致（瑞尔为整数）。<br>
+        3. 付款成功后本页会<strong>自动检测并跳转</strong>，请稍候几秒。
+      </div>
+
+      <div class="card">
+        <div style="font-weight:700;margin-bottom:8px">操作步骤</div>
+        <ol class="steps">
+          <li>点击「一键复制瑞尔金额」</li>
+          <li>打开支付宝 App，扫描上方二维码</li>
+          <li>在金额输入框粘贴 / 输入瑞尔金额</li>
+          <li>确认币种为 KHR 后完成支付</li>
+          <li>回到本页等待自动跳转</li>
+        </ol>
+      </div>
+
+      <div class="footer" id="tradeLine"></div>
+    </div>
+
+    <div id="error" class="err" style="display:none"></div>
+  </div>
+
+  <div class="success-overlay" id="successOverlay">
+    <div class="success-box">
+      <h2>支付成功</h2>
+      <p id="successMsg">订单已确认到账，正在跳转…</p>
+    </div>
+  </div>
+
+  <script>
+    function qs(name) {
+      return new URL(location.href).searchParams.get(name) || '';
+    }
+    function formatNum(s) {
+      if (!s) return '-';
+      try { return Number(s).toLocaleString('en-US'); } catch (e) { return s; }
+    }
+    function token() {
+      try { return localStorage.getItem('vr_token') || ''; } catch (e) { return ''; }
+    }
+
+    const qr = qs('qr');
+    const cny = qs('cny');
+    const list = qs('list');
+    const khr = qs('khr');
+    const rate = qs('rate');
+    const expect = qs('expect');
+    const trade = qs('trade');
+    const returnUrl = qs('return') || ('/pay/result.html?orderNo=' + encodeURIComponent(trade || ''));
+    const payKhr = expect || khr;
+
+    const statusEl = document.getElementById('payStatus');
+    const openBtn = document.getElementById('openOrderBtn');
+    let paid = false;
+    let pollTimer = null;
+
+    function goResult() {
+      try { location.replace(returnUrl); }
+      catch (e) { location.href = returnUrl; }
+    }
+
+    function markPaid() {
+      if (paid) return;
+      paid = true;
+      if (pollTimer) clearInterval(pollTimer);
+      statusEl.className = 'pay-status ok';
+      statusEl.textContent = '支付成功！即将跳转…';
+      openBtn.style.display = 'block';
+      openBtn.textContent = '立即查看结果';
+      document.getElementById('successOverlay').classList.add('show');
+      setTimeout(goResult, 1200);
+    }
+
+    async function checkOnce() {
+      if (!trade || paid) return;
+      const t = token();
+      if (!t) {
+        statusEl.textContent = '未检测到登录状态，付完后请点「查看结果」';
+        openBtn.style.display = 'block';
+        return;
+      }
+      try {
+        const res = await fetch('/api/orders/' + encodeURIComponent(trade) + '/payment-status', {
+          headers: { Authorization: 'Bearer ' + t, Accept: 'application/json' },
+        });
+        const json = await res.json().catch(() => null);
+        const st = json && json.status;
+        if (st === 'completed' || st === 'paid' || st === 'provisioning') {
+          markPaid();
+          return;
+        }
+        if (st === 'pending_payment') {
+          statusEl.textContent = '等待支付到账中…（到账后自动跳转）';
+        } else if (st) {
+          statusEl.textContent = '订单状态：' + st;
+        }
+      } catch (e) {}
+    }
+
+    function startPolling() {
+      openBtn.style.display = 'block';
+      openBtn.textContent = '已付款？查看结果';
+      openBtn.addEventListener('click', goResult);
+      checkOnce();
+      pollTimer = setInterval(checkOnce, 2500);
+      document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'visible') checkOnce();
+      });
+      window.addEventListener('focus', checkOnce);
+    }
+
+    if (!payKhr) {
+      document.getElementById('error').style.display = 'block';
+      document.getElementById('error').textContent = '参数不完整：缺少应付瑞尔金额。请返回重新发起支付。';
+    } else {
+      document.getElementById('main').style.display = 'block';
+      document.getElementById('khrText').textContent = formatNum(payKhr);
+      document.getElementById('khrText2').textContent = formatNum(payKhr) + ' KHR';
+      document.getElementById('listText').textContent = list || '-';
+      document.getElementById('cnyText').textContent = cny ? ('¥' + cny + ' CNY') : '-';
+      document.getElementById('rateText').textContent = rate ? ('1 CNY = ' + rate + ' KHR') : '-';
+      document.getElementById('formulaText').textContent =
+        (cny && rate) ? (cny + ' × ' + rate + ' = ' + (khr || payKhr) + '（向上取整）') : '-';
+      if (expect) {
+        document.getElementById('expectRow').style.display = 'flex';
+        document.getElementById('expectText').textContent = expect + ' KHR（请严格按此金额）';
+      }
+      if (trade) document.getElementById('tradeLine').textContent = '订单号：' + trade;
+
+      const el = document.getElementById('qrcode');
+      function renderQrFallback(text) {
+        el.innerHTML = '';
+        const img = document.createElement('img');
+        img.width = 240; img.height = 240; img.alt = 'QR';
+        img.style.display = 'block';
+        const mirrors = [
+          'https://api.qrserver.com/v1/create-qr-code/?size=240x240&margin=8&data=' + encodeURIComponent(text),
+          'https://quickchart.io/qr?size=240&text=' + encodeURIComponent(text),
+        ];
+        let i = 0;
+        img.onerror = function () {
+          i += 1;
+          if (i < mirrors.length) img.src = mirrors[i];
+          else el.innerHTML = '<div style="color:#c00;padding:12px;font-size:13px">二维码生成失败，请复制金额后手动扫收款码。</div>';
+        };
+        img.src = mirrors[0];
+        el.appendChild(img);
+      }
+      if (qr) {
+        try {
+          if (typeof QRCode === 'function') {
+            new QRCode(el, {
+              text: qr, width: 240, height: 240,
+              colorDark: '#000000', colorLight: '#ffffff',
+              correctLevel: (QRCode.CorrectLevel && QRCode.CorrectLevel.M) || 0,
+            });
+            setTimeout(function () {
+              if (!el.querySelector('canvas,img')) renderQrFallback(qr);
+            }, 800);
+          } else renderQrFallback(qr);
+        } catch (e) { renderQrFallback(qr); }
+      } else {
+        el.innerHTML = '<div style="padding:16px;color:#666;font-size:13px;max-width:240px;text-align:center">未返回二维码内容。请使用你的 ABA 固定收款码，并严格输入上方瑞尔金额。</div>';
+      }
+
+      document.getElementById('copyBtn').addEventListener('click', async function () {
+        const text = String(payKhr);
+        try {
+          await navigator.clipboard.writeText(text);
+        } catch (e) {
+          const ta = document.createElement('textarea');
+          ta.value = text; document.body.appendChild(ta); ta.select();
+          document.execCommand('copy'); document.body.removeChild(ta);
+        }
+        const ok = document.getElementById('copied');
+        ok.style.display = 'block';
+        setTimeout(function () { ok.style.display = 'none'; }, 2000);
+      });
+
+      startPolling();
+    }
+  </script>
+</body>
+</html>

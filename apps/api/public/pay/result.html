@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>支付结果 · RenrenYings Cloud</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+</head>
+<body>
+  <div class="panel">
+    <h1 id="title">支付处理中</h1>
+    <p id="desc">若你已完成付款，系统会通过异步回调自动开通。可到「我的服务」查看交付信息。</p>
+    <div class="msg" id="msg" style="margin:12px 0"></div>
+    <div class="form-actions">
+      <a class="btn primary" href="/services.html">查看我的服务</a>
+      <a class="btn ghost" href="/">回首页</a>
+    </div>
+  </div>
+  <script src="/assets/app.js?v=20260804a"></script>
+  <script>
+    async function poll() {
+      const orderNo = new URLSearchParams(location.search).get('orderNo')
+        || localStorage.getItem('vr_last_order') || '';
+      if (!orderNo || !token()) return;
+      try {
+        const d = await api('/api/orders/' + encodeURIComponent(orderNo) + '/payment-status');
+        const el = document.getElementById('msg');
+        el.textContent = '订单 ' + orderNo + ' · 状态 ' + d.status;
+        if (d.status === 'completed') {
+          document.getElementById('title').textContent = '支付成功 · 已开通';
+          document.getElementById('desc').textContent = '服务已交付，可进入「我的服务」查看登录信息。';
+          el.className = 'msg ok';
+          setTimeout(() => location.href = '/services.html', 1200);
+        } else if (d.status === 'paid' || d.status === 'provisioning') {
+          document.getElementById('title').textContent = '已付款 · 开通中';
+          el.className = 'msg ok';
+          setTimeout(poll, 2000);
+        } else if (d.status === 'pending_payment') {
+          document.getElementById('title').textContent = '等待支付确认';
+          el.className = 'msg';
+          setTimeout(poll, 3000);
+        } else {
+          el.className = 'msg';
+        }
+      } catch (e) {
+        document.getElementById('msg').textContent = e.message;
+      }
+    }
+    document.addEventListener('DOMContentLoaded', poll);
+  </script>
+</body>
+</html>

@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>选择支付方式 · RenrenYings Cloud</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+</head>
+<body>
+  <header class="top"><div class="wrap row between">
+    <a class="brand" href="/">RenrenYings <span>Cloud</span></a>
+    <nav class="nav">
+      <a href="/#plans">套餐</a>
+      <a href="/services.html">我的服务</a>
+    </nav>
+  </div></header>
+
+  <section class="section">
+    <div class="wrap pay-checkout">
+      <div class="section-head">
+        <h2>确认支付</h2>
+        <p>选择一种支付方式。ABA 扫码实际按<strong>瑞尔（KHR）</strong>收款，页面会明确展示应付瑞尔。</p>
+      </div>
+
+      <div class="pay-layout">
+        <article class="card pay-summary" id="orderSummary">
+          <div class="muted-text">加载订单…</div>
+        </article>
+
+        <article class="card">
+          <h3 style="margin:0 0 12px;font-size:16px">支付方式</h3>
+          <div id="methodList" class="pay-methods">加载中…</div>
+          <div class="msg" id="msg" style="margin-top:12px"></div>
+          <div class="form-actions" style="margin-top:16px">
+            <button class="btn primary" id="payBtn" type="button" disabled>去支付</button>
+            <a class="btn ghost" href="/#plans">返回套餐</a>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <script src="/assets/app.js?v=20260804a"></script>
+  <script>
+    let selectedMethod = '';
+    let orderNo = '';
+    let orderData = null;
+    let methods = [];
+    let rates = {};
+
+    function qs(name) {
+      return new URLSearchParams(location.search).get(name) || '';
+    }
+    // icon field: either a known icon key (aba-khqr/aba-payway/crypto-usdt/...)
+    // mapping to /assets/icons/<key>.svg, or a single emoji/char fallback.
+    const KNOWN_ICONS = ['aba-khqr','aba-payway','crypto-usdt','usdt','crypto','generic'];
+    function iconHtml(icon) {
+      const k = String(icon || '').trim().toLowerCase();
+      if (!k) return '<img class="pay-icon-img" src="/assets/icons/generic.svg" alt="" />';
+      if (/^[\p{Emoji}\p{Emoji_Component}\u200d\uFE0F]+$/u.test(k) && k.length <= 4) {
+        return `<span class="pay-icon-emoji">${k}</span>`;
+      }
+      const file = KNOWN_ICONS.includes(k) ? k
+        : (k.includes('khqr') ? 'aba-khqr'
+          : k.includes('payway') || k.includes('aba_pc') ? 'aba-payway'
+          : k.includes('usdt') || k.includes('trx') || k.includes('crypto') ? 'crypto-usdt'
+          : 'generic');
+      return `<img class="pay-icon-img" src="/assets/icons/${file}.svg" alt="" />`;
+    }
+    function moneyMajor(cents, currency) {
+      return (Number(cents || 0) / 100).toFixed(2) + ' ' + currency;
+    }
+    function estimateKhr(order) {
+      if (!order) return null;
+      const rate = Number(rates.cnyToKhr || 560);
+      const usdToCny = Number(rates.usdToCny || 7.2);
+      let cny = order.amountCents / 100;
+      if (order.currency === 'USD') cny = cny * usdToCny;
+      const khr = Math.max(1, Math.ceil(cny * rate));
+      return { cny: cny.toFixed(2), khr, rate };
+    }
+
+    function renderSummary() {
+      const box = document.getElementById('orderSummary');
+      if (!orderData) {
+        box.innerHTML = '<div class="msg err">订单不存在或无权查看</div>';
+        return;
+      }
+      const est = estimateKhr(orderData);
+      box.innerHTML = `
+        <div class="muted-text">订单号</div>
+        <div style="font-weight:700;margin-bottom:10px;word-break:break-all">${orderData.orderNo}</div>
+        <div class="muted-text">套餐</div>
+        <div style="font-weight:600;margin-bottom:10px">${orderData.plan?.name || '-'}</div>
+        <div class="muted-text">标价</div>
+        <div class="pay-price">${moneyMajor(orderData.amountCents, orderData.currency)}</div>
+        ${est ? `<div class="pay-fx">
+          <div>约合人民币 <b>¥${est.cny}</b></div>
+          <div>ABA 扫码预计应付 <b class="khr">${est.khr.toLocaleString()} KHR</b></div>
+          <div class="muted-text">汇率 1 CNY ≈ ${est.rate} KHR（向上取整）</div>
+        </div>` : ''}
+        <div class="muted-text" style="margin-top:12px">状态：<span class="badge ${orderData.status}">${orderData.status}</span></div>
+      `;
+    }
+
+    function renderMethods() {
+      const box = document.getElementById('methodList');
+      if (!methods.length) {
+        box.innerHTML = '<div class="msg err">当前没有可用支付方式，请联系管理员在后台「支付接口」页配置。</div>';
+        return;
+      }
+      if (!selectedMethod) selectedMethod = methods[0].id || methods[0].code;
+      box.innerHTML = methods.map(m => {
+        const mid = m.id || m.code;
+        return `
+        <label class="pay-method ${selectedMethod === mid ? 'active' : ''}">
+          <input type="radio" name="payMethod" value="${mid}" ${selectedMethod === mid ? 'checked' : ''} />
+          <span class="pay-method-icon">${iconHtml(m.icon)}</span>
+          <span class="pay-method-body">
+            <strong>${m.name}</strong>
+            <em>${m.desc || ''}</em>
+            <small>${m.settleHint || ''}</small>
+          </span>
+        </label>`;
+      }).join('');
+      box.querySelectorAll('input[name=payMethod]').forEach(el => {
+        el.addEventListener('change', () => {
+          selectedMethod = el.value;
+          renderMethods();
+        });
+      });
+      document.getElementById('payBtn').disabled = false;
+    }
+
+    async function boot() {
+      if (!token()) {
+        location.href = '/login.html?next=' + encodeURIComponent(location.pathname + location.search);
+        return;
+      }
+      orderNo = qs('orderNo') || localStorage.getItem('vr_last_order') || '';
+      if (!orderNo) {
+        document.getElementById('orderSummary').innerHTML = '<div class="msg err">缺少订单号，请从套餐页重新下单。</div>';
+        return;
+      }
+      try {
+        const [order, payInfo] = await Promise.all([
+          api('/api/orders/' + encodeURIComponent(orderNo)),
+          api('/api/payments/methods'),
+        ]);
+        orderData = order;
+        methods = payInfo.methods || [];
+        rates = payInfo.rates || {};
+        if (order.status && order.status !== 'pending_payment') {
+          document.getElementById('msg').className = 'msg ok';
+          document.getElementById('msg').textContent = '订单状态：' + order.status + '，无需再次支付。';
+          if (order.status === 'completed') {
+            setTimeout(() => location.href = '/services.html', 800);
+          }
+        }
+        renderSummary();
+        renderMethods();
+      } catch (e) {
+        document.getElementById('orderSummary').innerHTML = `<div class="msg err">${e.message}</div>`;
+      }
+    }
+
+    document.getElementById('payBtn').addEventListener('click', async () => {
+      const msg = document.getElementById('msg');
+      const btn = document.getElementById('payBtn');
+      if (!selectedMethod || !orderNo) return;
+      btn.disabled = true;
+      showMsg(msg, '正在创建支付单…', '');
+      try {
+        const pay = await api('/api/orders/' + encodeURIComponent(orderNo) + '/pay', {
+          method: 'POST',
+          body: JSON.stringify({ method: selectedMethod }),
+        });
+        localStorage.setItem('vr_last_order', orderNo);
+        localStorage.setItem('vr_last_pay_meta', JSON.stringify(pay.displayMeta || {}));
+        if (pay.payData && String(pay.payData).startsWith('http')) {
+          location.href = pay.payData;
+          return;
+        }
+        // fallback: tip page with meta only
+        if (pay.displayMeta && pay.displayMeta.khrMajor) {
+          const u = new URL('/pay/aba-khqr.html', location.origin);
+          u.searchParams.set('cny', String(pay.displayMeta.cnyMajor || ''));
+          u.searchParams.set('list', `${(pay.displayMeta.listMajor || '')} ${pay.displayMeta.listCurrency || ''}`);
+          u.searchParams.set('khr', String(pay.displayMeta.khrMajor));
+          u.searchParams.set('rate', String(pay.displayMeta.rate || ''));
+          u.searchParams.set('trade', orderNo);
+          u.searchParams.set('return', '/pay/result.html?orderNo=' + encodeURIComponent(orderNo));
+          if (pay.payData) u.searchParams.set('qr', String(pay.payData));
+          location.href = u.toString();
+          return;
+        }
+        showMsg(msg, '支付单已创建，但未返回跳转链接。订单号：' + orderNo, 'err');
+        btn.disabled = false;
+      } catch (e) {
+        showMsg(msg, e.message, 'err');
+        btn.disabled = false;
+      }
+    });
+
+    document.addEventListener('DOMContentLoaded', boot);
+  </script>
+</body>
+</html>

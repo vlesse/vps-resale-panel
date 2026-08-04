@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RenrenYings Cloud · 精选优化 VPS</title>
+  <meta name="description" content="RenrenYings Cloud 提供精选线路优化 VPS：验收上架、支付即交付、统一控制台运维。" />
+  <link rel="stylesheet" href="/assets/style.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="wrap row between">
+      <a class="brand" href="/"><i class="brand-dot"></i>RenrenYings <span>Cloud</span></a>
+      <button class="nav-toggle" type="button" aria-label="菜单" onclick="document.getElementById('mainNav').classList.toggle('open')">☰</button>
+      <nav class="nav" id="mainNav">
+        <a href="#features" onclick="document.getElementById('mainNav').classList.remove('open')">能力</a>
+        <a href="#plans" onclick="document.getElementById('mainNav').classList.remove('open')">套餐</a>
+        <a href="#flow" onclick="document.getElementById('mainNav').classList.remove('open')">交付流程</a>
+        <a href="/services.html">我的服务</a>
+        <span id="userSlot"></span>
+        <a href="/login.html" id="loginLink">登录</a>
+        <a class="btn sm primary" href="/register.html">免费注册</a>
+      </nav>
+    </div>
+  </header>
+
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div>
+        <p class="eyebrow">Optimized Cloud Compute</p>
+        <h1>精选线路优化 VPS<br/><em>开箱即用 · 按月订阅</em></h1>
+        <p class="lead">
+          每台机器入库前完成网络与系统调优，支付成功即交付可用实例。
+          支持 CNY / USD 月付，状态检测、重启、改密、重装与续费统一在控制台完成。
+        </p>
+        <div class="actions">
+          <a class="btn primary lg" href="#plans">查看套餐</a>
+          <a class="btn ghost lg" href="/login.html">客户登录</a>
+        </div>
+        <div class="stats">
+          <div><b>验收上架</b><span>有货才可下单，避免空单</span></div>
+          <div><b>双币月付</b><span>CNY / USD 灵活订阅</span></div>
+          <div><b>一键运维</b><span>状态 · 重启 · 改密 · 重装</span></div>
+        </div>
+      </div>
+
+      <aside class="hero-card">
+        <h3>交付前已做好优化</h3>
+        <p class="sub">不是裸机直出，上架前完成验收与链路精调。</p>
+        <ul>
+          <li><span class="ico">✓</span><span>网络链路与系统基线调优，降低首装成本</span></li>
+          <li><span class="ico">✓</span><span>库存驱动销售，支付到账自动开通</span></li>
+          <li><span class="ico">✓</span><span>统一控制台：状态、重启、改密、重装、续费</span></li>
+          <li><span class="ico">✓</span><span>聚合收款，支持人民币 / 美元月付</span></li>
+        </ul>
+        <div class="hero-metrics">
+          <div><strong>分钟级</strong><span>支付后自动交付</span></div>
+          <div><strong>7×24</strong><span>控制台自助运维</span></div>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <section id="features" class="section">
+    <div class="wrap">
+      <div class="section-head">
+        <h2>为什么选择我们</h2>
+        <p>把复杂的上游资源与运维能力，收成更干净的产品体验：可买、可交付、可自助管理。</p>
+      </div>
+      <div class="feature-grid">
+        <article class="feature">
+          <div class="tag">01</div>
+          <h4>精选节点</h4>
+          <p>只上架已验收实例，配置、连通性与基础环境达标后才会进入可售库存。</p>
+        </article>
+        <article class="feature">
+          <div class="tag">02</div>
+          <h4>链路优化</h4>
+          <p>面向跨境与高延迟场景做线路与内核参数精调，减少你自己反复踩坑的时间。</p>
+        </article>
+        <article class="feature">
+          <div class="tag">03</div>
+          <h4>即时交付</h4>
+          <p>支付成功后自动分配库存并生成访问信息，控制台可立即查看与操作。</p>
+        </article>
+        <article class="feature">
+          <div class="tag">04</div>
+          <h4>统一控制台</h4>
+          <p>状态检测、重启、重置密码、重装初始化与续费集中管理，少切工具少踩坑。</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section id="plans" class="section muted">
+    <div class="wrap">
+      <div class="section-head">
+        <h2>热门套餐</h2>
+        <p>价格含基础优化；机器均来自已验收可交付库存。支持人民币 / 美元月付。</p>
+      </div>
+      <div id="planList" class="cards">加载中...</div>
+    </div>
+  </section>
+
+  <section id="flow" class="section">
+    <div class="wrap">
+      <div class="section-head">
+        <h2>四步完成开通</h2>
+        <p>从选型到交付，流程尽量短；开通后进入控制台即可自助运维。</p>
+      </div>
+      <div class="steps">
+        <div><span>1</span><h4>选择套餐</h4><p>按地区与配置挑选，CNY 或 USD 月付</p></div>
+        <div><span>2</span><h4>在线支付</h4><p>聚合收款，到账自动确认</p></div>
+        <div><span>3</span><h4>即时交付</h4><p>自动分配可用实例与登录信息</p></div>
+        <div><span>4</span><h4>控制台管理</h4><p>状态 / 重启 / 改密 / 重装 / 续费</p></div>
+      </div>
+
+      <div class="cta-band" style="margin-top:28px">
+        <div>
+          <h3>准备好了？马上选一台</h3>
+          <p>注册后即可下单。若已有账号，登录后可直接购买并进入「我的服务」管理。</p>
+        </div>
+        <div class="actions" style="margin:0">
+          <a class="btn primary lg" href="#plans">立即选购</a>
+          <a class="btn ghost lg" href="/register.html">创建账号</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <div class="wrap row between">
+      <div>© RenrenYings Cloud</div>
+      <div class="muted-text">精选优化 · 按月订阅 · 自助运维</div>
+    </div>
+  </footer>
+
+  <script src="/assets/app.js?v=20260804a"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      loadPlans();
+      refreshUserNav();
+      // 登录态时隐藏顶部"登录"链接（用户已通过 user-chip 进入）
+      if (token()) {
+        const ll = document.getElementById('loginLink');
+        if (ll) ll.style.display = 'none';
+      }
+    });
+  </script>
+</body>
+</html>

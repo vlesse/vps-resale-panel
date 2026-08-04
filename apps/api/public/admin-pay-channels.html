@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>支付接口 · RenrenYings Cloud</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+  <style>
+    .ch-row { display:grid; grid-template-columns: 48px 1.4fr 1fr auto; gap:14px; align-items:center; padding:14px; border:1px solid var(--line); border-radius:14px; margin-bottom:10px; background:rgba(15,23,42,.55); }
+    .ch-row.disabled { opacity:.6; }
+    .ch-icon { width:40px; height:40px; border-radius:8px; display:flex; align-items:center; justify-content:center; }
+    .ch-icon img { width:36px; height:36px; border-radius:8px; }
+    .ch-icon span { font-size:26px; }
+    .ch-meta strong { font-size:15px; display:block; }
+    .ch-meta .code { color:var(--muted); font-size:12px; }
+    .ch-meta small { color:#93c5fd; font-size:12px; }
+    .ch-tech { font-size:12px; color:var(--muted); line-height:1.6; }
+    .ch-tech b { color:#cbd5e1; font-weight:600; }
+    .ch-actions { display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; }
+    .switch { position:relative; width:42px; height:24px; }
+    .switch input { opacity:0; width:0; height:0; }
+    .switch .slider { position:absolute; inset:0; background:#334155; border-radius:999px; transition:.2s; cursor:pointer; }
+    .switch .slider::before { content:''; position:absolute; width:18px; height:18px; left:3px; top:3px; background:#fff; border-radius:50%; transition:.2s; }
+    .switch input:checked + .slider { background:#22c55e; }
+    .switch input:checked + .slider::before { transform:translateX(18px); }
+    .modal-bg { display:none; position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:50; align-items:flex-start; justify-content:center; padding:24px 16px; overflow:auto; }
+    .modal-bg.show { display:flex; }
+    .modal { background:#0f172a; border:1px solid var(--line-strong); border-radius:16px; max-width:560px; width:100%; padding:22px; }
+    .modal h3 { margin:0 0 6px; }
+    .cred-field { position:relative; }
+    .cred-field .toggle { position:absolute; right:8px; top:50%; transform:translateY(-50%); font-size:11px; color:var(--muted); cursor:pointer; user-select:none; }
+    .hint-row { color:var(--muted); font-size:12px; margin:4px 0 0; }
+    .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; background:#1e293b; color:#93c5fd; }
+  </style>
+</head>
+<body>
+  <div class="admin-grid">
+    <aside class="side">
+      <div class="brand" style="margin-bottom:16px">Admin <span>Console</span></div>
+      <a href="/admin.html">库存管理</a>
+      <a href="/admin-users.html">用户管理</a>
+      <a href="/admin-pay-channels.html" class="active">支付接口</a>
+      <a href="/">返回前台</a>
+      <a href="/profile.html">资料设置</a>
+      <a href="#" onclick="clearAuth(); location.href='/login.html'">退出</a>
+      <p class="muted-text" style="margin-top:18px;font-size:12px" id="who"></p>
+    </aside>
+    <main class="main">
+      <h2>支付接口</h2>
+      <p class="muted-text">在这里添加 / 编辑支付渠道。密钥加密保存，前台只显示名称与图标。</p>
+
+      <div class="toolbar">
+        <button class="btn primary" onclick="openCreate()">+ 添加支付接口</button>
+        <button class="btn" onclick="loadChannels()">刷新</button>
+        <span class="hint-row" style="margin-left:auto">共 <b id="cnt">-</b> 个 · <b id="enabledCnt">-</b> 个启用</span>
+      </div>
+
+      <div id="list">加载中…</div>
+      <div id="msg" class="msg"></div>
+
+      <!-- Modal -->
+      <div class="modal-bg" id="modalBg">
+        <div class="modal">
+          <h3 id="modalTitle">添加支付接口</h3>
+          <p class="hint-row" id="modalHint"></p>
+          <form onsubmit="saveChannel(event)">
+            <input type="hidden" id="f_id" />
+            <div class="grid2">
+              <div>
+                <label>名称 *</label>
+                <input id="f_name" required placeholder="ABA KHQR 扫码" />
+              </div>
+              <div>
+                <label>编号 code * <span class="pill">唯一</span></label>
+                <input id="f_code" required placeholder="aba_khqr" />
+                <p class="hint-row">小写英文，如 aba_khqr / aba_pc / crypto。已存在则不能改。</p>
+              </div>
+              <div>
+                <label>渠道类型 channel *</label>
+                <select id="f_channel" onchange="onChannelChange()">
+                  <option value="jeepay">jeepay（Jeepay 聚合）</option>
+                  <option value="tokenpay">tokenpay（TokenPay 虚拟币）</option>
+                </select>
+              </div>
+              <div>
+                <label>wayCode 通道编码 *</label>
+                <input id="f_wayCode" required placeholder="ABA_KHQR / ABA_PC / TRX_USDT" />
+                <p class="hint-row">决定 Jeepay 走哪个支付通道，也决定币种换算分支。</p>
+              </div>
+              <div>
+                <label>结算币种</label>
+                <input id="f_settleCurrency" placeholder="KHR / USD / USDT" />
+                <p class="hint-row">KHQR 自动 KHR；ABA_PC 默认 USD；USDT 填 USDT。</p>
+              </div>
+              <div>
+                <label>图标 icon</label>
+                <input id="f_icon" placeholder="aba-khqr / 🇰🇭" />
+                <p class="hint-row">填已知 key（aba-khqr/aba-payway/crypto-usdt）用图片；填 emoji 用 emoji。</p>
+              </div>
+              <div>
+                <label>汇率 rate（CNY→结算币）</label>
+                <input id="f_rate" type="number" step="0.0001" placeholder="560 或 0.14" />
+              </div>
+              <div>
+                <label>USD→CNY 汇率（可选）</label>
+                <input id="f_usdToCny" type="number" step="0.01" placeholder="7.2" />
+              </div>
+              <div>
+                <label>网关地址 gatewayUrl</label>
+                <input id="f_gatewayUrl" placeholder="https://pay.free--china.com" />
+              </div>
+              <div>
+                <label>排序 sortOrder</label>
+                <input id="f_sortOrder" type="number" value="0" />
+              </div>
+            </div>
+            <label>说明文案（显示在前台方式下方）</label>
+            <input id="f_descText" placeholder="支付宝扫 ABA 个人码，按瑞尔金额付款" />
+
+            <div class="card" style="margin-top:12px;padding:14px;background:rgba(15,23,42,.6)">
+              <strong style="font-size:13px">密钥凭证（加密保存）</strong>
+              <p class="hint-row">新建必填；编辑留空表示不改原值。已保存值以掩码显示。</p>
+              <div id="credFields"></div>
+              <p class="hint-row" id="credMask" style="margin-top:8px"></p>
+            </div>
+
+            <label>备注 notes（仅后台）</label>
+            <textarea id="f_notes" rows="2"></textarea>
+
+            <label class="row" style="display:flex;align-items:center;gap:8px;margin-top:8px">
+              <input type="checkbox" id="f_isEnabled" checked /> 启用（前台可见可下单）
+            </label>
+
+            <div class="form-actions" style="margin-top:14px">
+              <button class="btn primary" type="submit">保存</button>
+              <button class="btn ghost" type="button" onclick="closeModal()">取消</button>
+              <button class="btn danger" type="button" id="delBtn" onclick="delChannel()" style="margin-left:auto;display:none">删除</button>
+            </div>
+            <div id="fmsg" class="msg" style="margin-top:10px"></div>
+          </form>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="/assets/app.js?v=20260804a"></script>
+  <script>
+    let channels = [];
+    let editingId = null;
+
+    const CRED_FIELDS = {
+      jeepay: ['mchNo', 'appId', 'appSecret'],
+      tokenpay: ['apiToken'],
+    };
+    const CRED_LABELS = {
+      mchNo: '商户号 mchNo',
+      appId: 'App ID',
+      appSecret: 'App Secret（密钥）',
+      apiToken: 'API Token',
+    };
+
+    function esc(s) {
+      return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    }
+    function iconHtml(icon) {
+      const k = String(icon || '').trim().toLowerCase();
+      if (!k) return '<span>💳</span>';
+      if (/^[\p{Emoji}\p{Emoji_Component}\u200d\uFE0F]+$/u.test(k) && k.length <= 4) return '<span>' + k + '</span>';
+      const known = ['aba-khqr','aba-payway','crypto-usdt','usdt','crypto','generic'];
+      const file = known.includes(k) ? k
+        : (k.includes('khqr') ? 'aba-khqr'
+          : k.includes('payway') || k.includes('aba_pc') ? 'aba-payway'
+          : k.includes('usdt') || k.includes('trx') || k.includes('crypto') ? 'crypto-usdt'
+          : 'generic');
+      return '<img src="/assets/icons/' + file + '.svg" alt="" />';
+    }
+
+    async function loadChannels() {
+      const msg = document.getElementById('msg');
+      try {
+        channels = await api('/api/admin/pay-channels');
+        document.getElementById('cnt').textContent = channels.length;
+        document.getElementById('enabledCnt').textContent = channels.filter(c => c.isEnabled).length;
+        render();
+      } catch (e) { showMsg(msg, e.message, 'err'); }
+    }
+
+    function render() {
+      const box = document.getElementById('list');
+      if (!channels.length) {
+        box.innerHTML = '<div class="card">还没有支付接口，点右上「+ 添加支付接口」。</div>';
+        return;
+      }
+      box.innerHTML = channels.map(c => `
+        <div class="ch-row ${c.isEnabled ? '' : 'disabled'}">
+          <div class="ch-icon">${iconHtml(c.icon)}</div>
+          <div class="ch-meta">
+            <strong>${esc(c.name)}</strong>
+            <div class="code">code: ${esc(c.code)} · ${esc(c.channel)} / ${esc(c.wayCode)}</div>
+            <small>${esc(c.descText || c.settleHint || '')}</small>
+          </div>
+          <div class="ch-tech">
+            结算币 <b>${esc(c.settleCurrency || '-')}</b> ·
+            rate <b>${c.rate ?? '-'}</b> ·
+            USD/CNY <b>${c.usdToCnyRate ?? '-'}</b><br>
+            网关 <b>${esc(c.gatewayUrl || '-')}</b>
+          </div>
+          <div class="ch-actions">
+            <label class="switch" title="启用/禁用">
+              <input type="checkbox" ${c.isEnabled ? 'checked' : ''} onchange="toggleChannel(${c.id}, this.checked)" />
+              <span class="slider"></span>
+            </label>
+            <button class="btn" onclick="openEdit(${c.id})">编辑</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    async function toggleChannel(id, enabled) {
+      try {
+        await api('/api/admin/pay-channels/' + id + '/toggle', { method:'PATCH', body: JSON.stringify({ enabled }) });
+        await loadChannels();
+      } catch (e) { showMsg(document.getElementById('msg'), e.message, 'err'); await loadChannels(); }
+    }
+
+    function onChannelChange() {
+      const ch = document.getElementById('f_channel').value;
+      const wrap = document.getElementById('credFields');
+      const fields = CRED_FIELDS[ch] || [];
+      wrap.innerHTML = fields.map(k => `
+        <div style="margin-top:8px">
+          <label>${CRED_LABELS[k] || k}</label>
+          <div class="cred-field">
+            <input id="cred_${k}" type="password" placeholder="${editingId ? '留空不改' : '必填'}" autocomplete="new-password" />
+            <span class="toggle" onclick="tog('cred_${k}', this)">显示</span>
+          </div>
+        </div>`).join('');
+      // hint on wayCode
+      const wc = document.getElementById('f_wayCode');
+      const hint = ch === 'jeepay' ? 'KHQR 用 ABA_KHQR；收银台用 ABA_PC；波场 USDT 用 TRX_USDT' : 'TokenPay 货币，如 USDT_TRC20';
+      document.getElementById('f_wayCode').placeholder = hint;
+    }
+
+    function tog(id, el) {
+      const inp = document.getElementById(id);
+      if (inp.type === 'password') { inp.type = 'text'; el.textContent = '隐藏'; }
+      else { inp.type = 'password'; el.textContent = '显示'; }
+    }
+
+    function openCreate() {
+      editingId = null;
+      document.getElementById('modalTitle').textContent = '添加支付接口';
+      document.getElementById('modalHint').textContent = '配置一个支付渠道。密钥会加密保存，前台只看到名称/图标/说明。';
+      document.getElementById('delBtn').style.display = 'none';
+      ['f_id','f_name','f_code','f_wayCode','f_settleCurrency','f_icon','f_rate','f_usdToCny','f_gatewayUrl','f_descText','f_notes'].forEach(i => document.getElementById(i).value = '');
+      document.getElementById('f_channel').value = 'jeepay';
+      document.getElementById('f_sortOrder').value = '0';
+      document.getElementById('f_isEnabled').checked = true;
+      document.getElementById('f_code').disabled = false;
+      document.getElementById('credMask').textContent = '';
+      onChannelChange();
+      document.getElementById('modalBg').classList.add('show');
+    }
+
+    function openEdit(id) {
+      const c = channels.find(x => String(x.id) === String(id));
+      if (!c) return;
+      editingId = id;
+      document.getElementById('modalTitle').textContent = '编辑：' + c.name;
+      document.getElementById('modalHint').textContent = '修改名称/图标/汇率/通道。密钥留空表示保持不变。';
+      document.getElementById('delBtn').style.display = 'inline-flex';
+      document.getElementById('f_id').value = c.id;
+      document.getElementById('f_name').value = c.name || '';
+      document.getElementById('f_code').value = c.code || '';
+      document.getElementById('f_code').disabled = true;
+      document.getElementById('f_channel').value = c.channel || 'jeepay';
+      document.getElementById('f_wayCode').value = c.wayCode || '';
+      document.getElementById('f_settleCurrency').value = c.settleCurrency || '';
+      document.getElementById('f_icon').value = c.icon || '';
+      document.getElementById('f_rate').value = c.rate ?? '';
+      document.getElementById('f_usdToCny').value = c.usdToCnyRate ?? '';
+      document.getElementById('f_gatewayUrl').value = c.gatewayUrl || '';
+      document.getElementById('f_sortOrder').value = c.sortOrder ?? 0;
+      document.getElementById('f_descText').value = c.descText || '';
+      document.getElementById('f_notes').value = c.notes || '';
+      document.getElementById('f_isEnabled').checked = !!c.isEnabled;
+      onChannelChange();
+      // show masked existing creds
+      const mask = c.credentials && Object.keys(c.credentials).length
+        ? Object.entries(c.credentials).map(([k,v]) => `${CRED_LABELS[k]||k}: ${v}`).join(' · ')
+        : '（无已存密钥）';
+      document.getElementById('credMask').textContent = '当前已存：' + mask;
+      document.getElementById('modalBg').classList.add('show');
+    }
+
+    function closeModal() {
+      document.getElementById('modalBg').classList.remove('show');
+    }
+
+    async function saveChannel(e) {
+      e.preventDefault();
+      const msg = document.getElementById('fmsg');
+      const ch = document.getElementById('f_channel').value;
+      const body = {
+        name: document.getElementById('f_name').value.trim(),
+        channel: ch,
+        wayCode: document.getElementById('f_wayCode').value.trim(),
+        settleCurrency: document.getElementById('f_settleCurrency').value.trim(),
+        icon: document.getElementById('f_icon').value.trim(),
+        rate: document.getElementById('f_rate').value,
+        usdToCnyRate: document.getElementById('f_usdToCny').value,
+        gatewayUrl: document.getElementById('f_gatewayUrl').value.trim(),
+        sortOrder: document.getElementById('f_sortOrder').value || 0,
+        descText: document.getElementById('f_descText').value.trim(),
+        notes: document.getElementById('f_notes').value.trim(),
+        isEnabled: document.getElementById('f_isEnabled').checked,
+      };
+      // creds
+      for (const k of (CRED_FIELDS[ch] || [])) {
+        const el = document.getElementById('cred_' + k);
+        if (el && el.value) body[k] = el.value;
+      }
+      showMsg(msg, '保存中…', '');
+      try {
+        if (editingId) {
+          await api('/api/admin/pay-channels/' + editingId, { method:'PATCH', body: JSON.stringify(body) });
+        } else {
+          body.code = document.getElementById('f_code').value.trim();
+          await api('/api/admin/pay-channels', { method:'POST', body: JSON.stringify(body) });
+        }
+        showMsg(msg, '已保存', 'ok');
+        setTimeout(() => { closeModal(); loadChannels(); }, 500);
+      } catch (e) {
+        showMsg(msg, e.message, 'err');
+      }
+    }
+
+    async function delChannel() {
+      if (!editingId) return;
+      if (!confirm('确认删除此支付接口？历史订单不受影响，但前台将不再显示此方式。')) return;
+      try {
+        await api('/api/admin/pay-channels/' + editingId, { method:'DELETE' });
+        closeModal();
+        loadChannels();
+      } catch (e) { showMsg(document.getElementById('fmsg'), e.message, 'err'); }
+    }
+
+    document.addEventListener('DOMContentLoaded', async () => {
+      const me = await requireAdmin();
+      if (!me) return;
+      document.getElementById('who').textContent = (me.displayName || me.email) + ' · ' + me.role;
+      loadChannels();
+      document.getElementById('modalBg').addEventListener('click', e => {
+        if (e.target.id === 'modalBg') closeModal();
+      });
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>登录 · RenrenYings Cloud</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+</head>
+<body>
+  <header class="top"><div class="wrap row between">
+    <a class="brand" href="/">RenrenYings <span>Cloud</span></a>
+    <a href="/register.html">注册账号</a>
+  </div></header>
+  <form class="panel" onsubmit="loginFormSubmit(event)">
+    <h1>客户 / 管理员登录</h1>
+    <p>使用邮箱登录。管理员可进入后台管理库存与订单。</p>
+    <label>邮箱</label>
+    <input id="email" type="email" required placeholder="you@example.com" />
+    <label>密码</label>
+    <input id="password" type="password" required minlength="6" />
+    <label>图形验证码</label>
+    <div class="captcha-row">
+      <input id="captchaCode" required placeholder="输入图中字符" autocomplete="off" />
+      <button type="button" id="captchaImg" class="captcha-img" title="点击换一张" onclick="refreshCaptcha()">加载中…</button>
+    </div>
+    <div class="form-actions">
+      <button class="btn primary" type="submit">登录</button>
+      <a class="btn ghost" href="/register.html">去注册</a>
+    </div>
+    <div id="msg" class="msg"></div>
+  </form>
+  <script src="/assets/app.js?v=20260804a"></script>
+  <script>document.addEventListener('DOMContentLoaded', refreshCaptcha);</script>
+</body>
+</html>

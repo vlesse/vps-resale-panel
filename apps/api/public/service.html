@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VPS 控制台 · RenrenYings Cloud</title>
+  <link rel="stylesheet" href="/assets/style.css?v=20260804c" />
+  <style>
+    .kv { display:grid; grid-template-columns: 140px 1fr; gap:8px 12px; font-size:14px; }
+    .kv div:nth-child(odd){ color: var(--muted); }
+    .ops { display:flex; flex-wrap:wrap; gap:10px; margin-top:14px; }
+    .block { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px; margin-bottom:14px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; white-space:pre-wrap; }
+    .warn { color:#fbbf24; font-size:13px; }
+  </style>
+</head>
+<body>
+  <header class="top"><div class="wrap row between">
+    <a class="brand" href="/">RenrenYings <span>Cloud</span></a>
+    <nav class="nav">
+      <a href="/services.html">返回列表</a>
+      <span id="userSlot"></span>
+      <a href="#" onclick="clearAuth(); location.href='/login.html'">退出</a>
+    </nav>
+  </div></header>
+
+  <section class="section">
+    <div class="wrap" id="box">加载中...</div>
+  </section>
+
+  <script src="/assets/app-v2c.js"></script>
+  <script>
+    // ---- self-contained helpers (fallback if app.js fails to load) ----
+    function _token() { try { return localStorage.getItem('vr_token') || ''; } catch { return ''; } }
+    function _clearAuth() { try { localStorage.removeItem('vr_token'); localStorage.removeItem('vr_user'); } catch {} }
+    function _escapeHtml(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+    async function _api(path, opts) {
+      opts = opts || {};
+      const headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
+      if (_token()) headers.Authorization = 'Bearer ' + _token();
+      const res = await fetch(path, { ...opts, headers });
+      const text = await res.text();
+      let data; try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+      if (!res.ok) { const msg = data.message || data.error || text || res.statusText; throw new Error(Array.isArray(msg) ? msg.join(', ') : String(msg)); }
+      return data;
+    }
+    function _showMsg(el, text, type) { if (!el) return; el.className = 'msg' + (type ? ' ' + type : ''); el.textContent = text || ''; }
+    const _STATUS_LABELS = { sourcing:'采购中',optimizing:'优化中',ready:'可售',reserved:'已锁定',sold:'已售出',suspended:'已停用',recycling:'回收中',retired:'已淘汰',pending_payment:'待支付',paid:'已支付',provisioning:'交付中',completed:'已完成',wait_stock:'待补货',cancelled:'已取消',refunded:'已退款',failed:'失败',pending:'待交付',active:'运行中',expired:'已到期',queued:'排队',running:'执行中',success:'成功' };
+    function _statusBadge(s) { return '<span class="badge ' + s + '">' + (_STATUS_LABELS[String(s||'').toLowerCase()] || s) + '</span>'; }
+
+    // use global functions if available, else fallback
+    const tk = typeof token !== 'undefined' ? token : _token;
+    const clearA = typeof clearAuth !== 'undefined' ? clearAuth : _clearAuth;
+    const callApi = typeof api !== 'undefined' ? api : _api;
+    const showM = typeof showMsg !== 'undefined' ? showMsg : _showMsg;
+    const badge = typeof statusBadge !== 'undefined' ? statusBadge : _statusBadge;
+
+    function sid() { return new URL(location.href).searchParams.get('id'); }
+
+    async function loadDetail() {
+      const id = sid();
+      const box = document.getElementById('box');
+      if (!id) { box.innerHTML = '<div class="card">缺少服务 id</div>'; return; }
+      if (!tk()) { location.href = '/login.html?next=' + encodeURIComponent(location.pathname + location.search); return; }
+      box.innerHTML = '<div class="card">正在加载服务 #' + id + '…</div>';
+      try {
+        const s = await callApi('/api/services/' + id);
+        const live = s.liveStatus || {};
+        const access = s.access || {};
+        const server = s.server || {};
+        box.innerHTML = `
+          <div class="section-head">
+            <h2>${s.plan?.name || 'VPS'} ${badge(s.status)}</h2>
+            <p>服务号 ${s.serviceNo} · 到期 ${(s.expireAt||'').replace('T',' ').slice(0,19)}</p>
+          </div>
+          <div class="block">
+            <h3>实例信息</h3>
+            <div class="kv">
+              <div>公网 IP</div><div>${access.ip || server.ip || '-'}</div>
+              <div>SSH</div><div class="mono">${access.username || 'root'}@${access.ip || server.ip}:${access.ssh_port || server.sshPort || 22}</div>
+              <div>密码</div><div class="mono" id="pwdBox">${access.password || '(未保存/仅密钥)'}</div>
+              <div>内网 IP</div><div>${access.internal_ip || (server.ip && server.ip !== access.ip ? server.ip : '-')}</div>
+              <div>配置</div><div>${server.cpu || '-'}C / ${server.memoryMb || '-'}MB / ${server.diskGb || '-'}GB</div>
+              <div>地区/控制面</div><div>${server.region || '-'} · ${server.controlPlane || s.capabilities?.controlPlane || '-'}</div>
+              <div>系统</div><div>${s.osTemplate || '-'}</div>
+              <div>订单</div><div>${s.order?.orderNo || '-'} · ${s.order?.currency || ''} ${((s.order?.amountCents||0)/100).toFixed(2)}</div>
+              ${access.notes ? `<div>说明</div><div>${access.notes}</div>` : ''}
+            </div>
+          </div>
+          <div class="block">
+            <h3>实时状态 ${live.online === true ? '<span class="badge ready">online</span>' : live.online === false ? '<span class="badge">offline?</span>' : ''}</h3>
+            <div class="kv">
+              <div>主机名</div><div>${live.hostname || '-'}</div>
+              <div>运行时间</div><div>${live.uptimeText || live.uptime || '-'}</div>
+              <div>负载</div><div>${live.load || '-'}</div>
+              <div>内存</div><div>${live.memory || '-'}</div>
+              <div>磁盘</div><div>${live.disk || '-'}</div>
+              <div>检测时间</div><div>${(s.lastCheckedAt||live.checkedAt||'-').toString().replace('T',' ').slice(0,19)}</div>
+            </div>
+            <div class="ops">
+              <button class="btn primary" onclick="doStatus()">刷新状态</button>
+              <button class="btn" onclick="doReboot()">重启</button>
+              <button class="btn" onclick="doResetPwd()">重置密码</button>
+              <button class="btn danger" onclick="doReinstall()">重装初始化</button>
+              <button class="btn good" onclick="doRenew('CNY')">CNY 续费</button>
+              <button class="btn good" onclick="doRenew('USD')">USD 续费</button>
+            </div>
+            <p class="warn" id="capNote"></p>
+            <div id="msg" class="msg"></div>
+          </div>
+          <div class="block">
+            <h3>最近操作</h3>
+            <div id="actions">${renderActions(s.recentActions || [])}</div>
+          </div>
+        `;
+        const note = document.getElementById('capNote');
+        if (note) {
+          const cap = s.capabilities || {};
+          note.textContent = cap.reinstallNote
+            || (cap.driver === 'proxmox'
+              ? '本实例由虚拟化控制面管理：状态/重启走 Hypervisor；改密优先 Guest Agent。'
+              : '本实例通过 Agent/SSH 运维：状态、重启、改密、基线初始化。');
+        }
+      } catch (e) {
+        box.innerHTML = '<div class="card">加载失败：' + (e.message || e) + '</div>';
+      }
+    }
+    const ACTION_LABELS = { status_check:'状态检测', reboot:'重启', reset_password:'重置密码', reinstall:'重装初始化', sync_info:'信息同步' };
+    function summarizeResult(action, rj, errMsg) {
+      if (errMsg) return errMsg;
+      if (!rj || typeof rj !== 'object') return '-';
+      if (action === 'status_check') {
+        const parts = [];
+        if (rj.online === true) parts.push('在线'); else if (rj.online === false) parts.push('离线');
+        if (rj.hostname) parts.push(rj.hostname);
+        if (rj.memory) parts.push('内存 ' + rj.memory);
+        if (rj.primaryIp) parts.push('IP ' + rj.primaryIp);
+        if (rj.uptimeText) parts.push('运行 ' + rj.uptimeText);
+        return parts.join(' · ') || '已获取状态';
+      }
+      if (action === 'reboot') return '重启指令已下发' + (rj.message ? '（' + rj.message + '）' : '');
+      if (action === 'reset_password') {
+        if (rj.password) return '密码已重置：' + rj.password;
+        return rj.message || '密码已重置';
+      }
+      if (action === 'reinstall') {
+        if (rj.password) return (rj.osLabel || '重装') + ' 完成，新密码：' + rj.password;
+        return rj.message || '重装指令已下发';
+      }
+      return rj.message || JSON.stringify(rj).slice(0, 120);
+    }
+    function renderActions(rows) {
+      if (!rows.length) return '<div class="muted-text">暂无</div>';
+      return `<table class="table"><thead><tr><th>时间</th><th>动作</th><th>状态</th><th>结果</th></tr></thead><tbody>
+        ${rows.map(a => `<tr>
+          <td>${(a.createdAt||'').replace('T',' ').slice(0,19)}</td>
+          <td>${ACTION_LABELS[a.action] || a.action}</td>
+          <td>${badge(a.status)}</td>
+          <td>${summarizeResult(a.action, a.resultJson, a.errorMessage)}</td>
+        </tr>`).join('')}
+      </tbody></table>`;
+    }
+    async function doStatus() {
+      const id = sid(); const msg = document.getElementById('msg');
+      try { showM(msg, '检测中...', ''); await callApi('/api/services/' + id + '/status-check', { method:'POST', body:'{}' }); showM(msg, '状态已刷新', 'ok'); loadDetail(); }
+      catch (e) { showM(msg, e.message, 'err'); }
+    }
+    async function doReboot() {
+      if (!confirm('确认重启该 VPS？')) return;
+      const id = sid(); const msg = document.getElementById('msg');
+      try { await callApi('/api/services/' + id + '/reboot', { method:'POST', body:'{}' }); showM(msg, '重启指令已发送，请稍后刷新状态', 'ok'); }
+      catch (e) { showM(msg, e.message, 'err'); }
+    }
+    async function doResetPwd() {
+      const custom = prompt('输入新密码（留空则自动生成，至少8位）', '');
+      if (custom === null) return;
+      const id = sid(); const msg = document.getElementById('msg');
+      try { const body = custom.trim() ? { password: custom.trim() } : {}; const res = await callApi('/api/services/' + id + '/reset-password', { method:'POST', body: JSON.stringify(body) }); const pwd = res.resultJson?.password || res.password; showM(msg, '密码已重置：' + (pwd || '见结果'), 'ok'); alert('新密码：' + (pwd || '(见页面)')); loadDetail(); }
+      catch (e) { showM(msg, e.message, 'err'); }
+    }
+    async function doReinstall() {
+      if (!confirm('确认执行重装？\nProxmox 有模板时会销毁并克隆重建；否则执行 SSH 基线初始化并重置密码。')) return;
+      const osTemplate = prompt('系统标签（记录用）', 'ubuntu-22.04') || 'ubuntu-22.04';
+      const id = sid(); const msg = document.getElementById('msg');
+      try { showM(msg, '执行中，可能需要 1-2 分钟...', ''); const res = await callApi('/api/services/' + id + '/reinstall', { method:'POST', body: JSON.stringify({ osTemplate }) }); const pwd = res.resultJson?.password; showM(msg, '重装初始化完成' + (pwd ? ('，新密码：' + pwd) : ''), 'ok'); if (pwd) alert('新密码：' + pwd); loadDetail(); }
+      catch (e) { showM(msg, e.message, 'err'); }
+    }
+    async function doRenew(currency) {
+      const id = sid();
+      try { const order = await callApi('/api/services/' + id + '/renew', { method:'POST', body: JSON.stringify({ currency }) }); localStorage.setItem('vr_last_order', order.orderNo); location.href = '/pay/checkout.html?orderNo=' + encodeURIComponent(order.orderNo); }
+      catch (e) { alert(e.message); }
+    }
+    // DCL — run loadDetail directly, no dependency on refreshUserNav
+    document.addEventListener('DOMContentLoaded', function() {
+      loadDetail();
+    });
+    // also run immediately if DOM already ready
+    if (document.readyState !== 'loading') { loadDetail(); }
+  </script>
+</body>
+</html>
