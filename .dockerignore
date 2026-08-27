@@ -1,0 +1,41 @@
+# 构建上下文里不需要的东西。
+#
+# 没有这个文件的话，Docker 会把整个目录（含上千兆的 node_modules）
+# 打包发给构建进程，每次构建都要多等好几分钟，而且这些文件在镜像里
+# 会被容器内重新安装的版本覆盖，发过去毫无意义。
+
+# 依赖：容器里会重新装，而且宿主机装的可能是 Windows/Mac 的二进制，
+# 拷进 Linux 容器根本用不了
+node_modules
+**/node_modules
+
+# 构建产物：容器里会重新编译
+.next
+**/.next
+dist
+**/dist
+*.tsbuildinfo
+
+# 配置和密钥：绝对不能进镜像
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# 开发时的杂物
+.git
+.gitignore
+.vscode
+.idea
+*.log
+temp/
+scratchpad/
+coverage/
+
+# 文档和设计稿：镜像里用不到
+docs/
+design/
+*.md
+!README.md
