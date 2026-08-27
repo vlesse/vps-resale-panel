@@ -1,5 +1,6 @@
 import { Controller, Get } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { Public } from '../auth/auth.decorators';
 
 @Controller('api')
 export class HealthController {
@@ -9,6 +10,8 @@ export class HealthController {
    * 容器编排和反向代理都靠它判断服务活没活着。
    * 必须真的查一下数据库 —— 进程还在但连不上库的话，这个服务其实是废的。
    */
+  // 容器健康检查和反向代理都要访问它，不能要求登录
+  @Public()
   @Get('health')
   async health() {
     const started = Date.now();

@@ -534,8 +534,25 @@ export class GcpProvider implements VpsProvider {
   /** 把谷歌云那些英文报错翻译成能照着解决的中文 */
   private explain(err: any): string {
     const msg: string = err?.message ?? String(err);
-    if (/could not load the default credentials|invalid_grant/i.test(msg)) {
+    if (
+      /invalid authentication credentials|Expected OAuth 2 access token|UNAUTHENTICATED/i.test(msg)
+    ) {
+      return (
+        '谷歌云不认这份密钥。三种可能：密钥已经在控制台被删了、粘贴时少了几行、' +
+        '或者这个服务账号属于另一个项目。建议重新下载一份 JSON 密钥再填一遍。'
+      );
+    }
+    if (/invalid_grant|Invalid JWT Signature|account not found/i.test(msg)) {
+      return (
+        '密钥签名校验没过，通常是 JSON 内容被改动过（比如换行被编辑器吃掉了）。' +
+        '请重新下载原始的 .json 文件，不要用记事本以外的工具编辑它。'
+      );
+    }
+    if (/could not load the default credentials/i.test(msg)) {
       return '服务账号密钥无效或已过期，请到谷歌云控制台重新生成一份 JSON 密钥';
+    }
+    if (/clock|JWT.*(iat|exp)|token.*expired/i.test(msg)) {
+      return '服务器时间不对导致密钥被拒。请检查这台服务器的系统时间是否准确（时间差超过 5 分钟就会失败）';
     }
     if (/Permission .* denied|IAM_PERMISSION_DENIED|does not have .*permission/i.test(msg)) {
       return (

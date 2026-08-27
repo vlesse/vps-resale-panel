@@ -1,10 +1,15 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { BullModule } from '@nestjs/bullmq';
 import { ScheduleModule } from '@nestjs/schedule';
 import { PrismaModule } from './prisma/prisma.module';
 import { ProvidersModule } from './providers/providers.module';
 import { ProvisioningModule } from './provisioning/provisioning.module';
+import { CaptchaModule } from './captcha/captcha.module';
+import { AuthModule } from './auth/auth.module';
+import { CloudAccountsModule } from './cloud-accounts/cloud-accounts.module';
+import { JwtAuthGuard } from './auth/auth.decorators';
 import { HealthController } from './health/health.controller';
 
 @Module({
@@ -28,8 +33,17 @@ import { HealthController } from './health/health.controller';
     }),
     PrismaModule,
     ProvidersModule,
+    CaptchaModule,
+    AuthModule,
+    CloudAccountsModule,
     ProvisioningModule,
   ],
   controllers: [HealthController],
+  providers: [
+    // 全局默认「所有接口都要登录」，公开接口靠 @Public() 显式开口子。
+    // 反过来做的话（默认公开、逐个挂守卫），新加接口忘了挂就是一个裸奔的接口，
+    // 而且没人会发现。这个方向上忘了标注只会导致接口打不开，看得见。
+    { provide: APP_GUARD, useClass: JwtAuthGuard },
+  ],
 })
 export class AppModule {}
