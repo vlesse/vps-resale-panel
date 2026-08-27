@@ -187,7 +187,8 @@ export interface ServiceDetail extends ServiceItem {
   } | null;
   liveStatus: LiveStatus | null;
   lastCheckedAt: string | null;
-  capabilities: { canPowerOn: boolean; canRebuild: boolean; hasMetrics: boolean };
+  /** 没有绑定机器时是 null —— 别当成「一台什么都不支持的机器」 */
+  capabilities: { canPowerOn: boolean; canRebuild: boolean; hasMetrics: boolean } | null;
   job: { id: string; kind: string; progress: number; step: string | null; status: string } | null;
   recentActions: {
     id: string;

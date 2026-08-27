@@ -93,9 +93,11 @@ export class ServicesService {
 
   async detail(actor: AuthedUser, id: bigint, refresh = false) {
     const service = await this.load(actor, id);
+    // 没有绑定机器时返回 null 而不是「全 false」。全 false 会被前端误读成
+    // 「这是一台没有带外管理的机器」，于是给用户看一段完全不相干的解释。
     const caps = service.machine
       ? this.registry.capabilities(service.machine.provider)
-      : { canPowerOn: false, canRebuild: false, hasMetrics: false };
+      : null;
 
     let status: unknown = service.lastStatusJson;
     if (refresh && service.machine) {
