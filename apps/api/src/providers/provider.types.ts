@@ -96,6 +96,16 @@ export interface ProvisionRequest {
   privateKeyPem: string;
   /** 进度回调，写进 ProvisionJob 供前端轮询显示 */
   onProgress?: (percent: number, step: string) => Promise<void> | void;
+
+  /**
+   * 一知道要在云上创建什么就立刻回调，**必须在真正下达创建指令之前**。
+   *
+   * 为什么这个回调不能省：建机是分步的，「提交创建请求」和「确认创建完成」
+   * 之间可能断电、超时、进程被杀。如果等建完才把云端标识写库，
+   * 那个窗口里出事就会留下一台在云上真实存在、真实计费、而面板完全不知道的实例。
+   * 先写下「我打算建一台叫 X 的机器」，回滚时就总有东西可删（删不存在的实例是幂等的）。
+   */
+  onRefKnown?: (ref: ProviderRef) => Promise<void> | void;
 }
 
 export interface ProvisionResult {

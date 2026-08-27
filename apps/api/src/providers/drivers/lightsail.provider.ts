@@ -165,7 +165,11 @@ export class LightsailProvider implements VpsProvider {
       enableBbr: spec.enableBbr !== false,
     });
 
-    let staticIpName: string | undefined;
+    const staticIpName = spec.staticIp ? `${instanceName}-ip` : undefined;
+
+    // 0. 先把「我要建什么」告诉上层并落库。提交创建和确认完成之间断掉的话，
+    //    云上可能已经有一台在计费的实例，没有这行记录就再也找不到它了。
+    await req.onRefKnown?.({ region, instanceName, staticIpName });
 
     // 1. 建实例
     await progress(12, '向 AWS 提交建机请求');
@@ -196,9 +200,8 @@ export class LightsailProvider implements VpsProvider {
 
       // 3. 静态 IP
       let ip: string | undefined;
-      if (spec.staticIp) {
+      if (staticIpName) {
         await progress(52, '分配并绑定静态公网 IP');
-        staticIpName = `${instanceName}-ip`;
         ip = await this.attachStaticIp(client, instanceName, staticIpName);
       }
 
@@ -230,10 +233,11 @@ export class LightsailProvider implements VpsProvider {
         osTemplate: spec.blueprintId,
         raw: { instanceName, region, bundleId: spec.bundleId, staticIpName },
       };
-    } catch (err) {
+    } catch (err: any) {
       // 半成品实例会一直计费，必须清掉
       await this.cleanupFailed(client, instanceName, staticIpName);
-      throw err;
+      // 我们自己抛的错已经是中文了，只翻译 AWS SDK 抛出来的
+      throw err?.name && err?.$metadata ? new Error(this.explain(err)) : err;
     }
   }
 

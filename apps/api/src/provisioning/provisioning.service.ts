@@ -238,6 +238,15 @@ export class ProvisioningService {
       publicKeyOpenssh: keypair.publicKeyOpenssh,
       privateKeyPem: keypair.privateKeyPem,
       onProgress: (p, s) => progress(Math.min(97, 5 + Math.round(p * 0.92)), s),
+      // 驱动在真正下达创建指令之前会先回调这里，把「打算建什么」落库。
+      // 少了这一步，「已提交创建」和「确认建好」之间断掉就会留下一台
+      // 云上真实存在、真实计费、而面板毫不知情的实例。
+      onRefKnown: async (ref) => {
+        await this.prisma.machine.update({
+          where: { id: machine.id },
+          data: { providerRefJson: ref as Prisma.InputJsonValue },
+        });
+      },
     };
 
     let result: ProvisionResult;
@@ -611,14 +620,20 @@ export class ProvisioningService {
     const rollback = String(this.config.get('PROVISION_ROLLBACK_ON_FAIL') ?? 'true') !== 'false';
     const machine = await this.prisma.machine.findUnique({ where: { id: machineId } });
 
+    // 只要记下过云端标识就一定要去销毁一次，哪怕根本没建成 ——
+    // 删一个不存在的实例是幂等的（驱动把「找不到」当成功），
+    // 但漏删一个真实存在的实例是要按小时付钱的。宁可多删一次。
+    let cleaned = false;
     if (rollback && machine?.providerRefJson) {
       try {
         const driver = this.registry.get(machine.provider);
         await driver.release({ ...ctx, ref: machine.providerRefJson });
+        cleaned = true;
         this.logger.log(`已回滚销毁半成品实例 ${machine.code}`);
       } catch (err: any) {
         this.logger.error(
-          `回滚销毁 ${machine.code} 失败，这台机器可能还在云厂商那边计费，请手动检查：${err.message}`,
+          `回滚销毁 ${machine.code} 失败！这台机器可能还在云厂商那边计费，` +
+            `请到控制台手动检查并删除。标识：${JSON.stringify(machine.providerRefJson)}。错误：${err.message}`,
         );
       }
     }
@@ -627,8 +642,11 @@ export class ProvisioningService {
       where: { id: machineId },
       data: {
         status: MachineStatus.error,
-        lastError: reason,
-        releasedAt: rollback ? new Date() : null,
+        // 清理成功才写销毁时间。没清理成功的留空，后台可以按这个筛出「疑似还在计费」的机器。
+        releasedAt: cleaned ? new Date() : null,
+        lastError: cleaned
+          ? reason
+          : `${reason}（回滚销毁未确认，请人工到云控制台核对是否有残留实例）`.slice(0, 500),
       },
     });
   }

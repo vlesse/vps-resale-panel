@@ -11,6 +11,8 @@ import { AuthModule } from './auth/auth.module';
 import { CloudAccountsModule } from './cloud-accounts/cloud-accounts.module';
 import { PlansModule } from './plans/plans.module';
 import { ServicesModule } from './services/services.module';
+import { OrdersModule } from './orders/orders.module';
+import { PaymentsModule } from './payments/payments.module';
 import { JwtAuthGuard } from './auth/auth.decorators';
 import { HealthController } from './health/health.controller';
 
@@ -41,6 +43,8 @@ import { HealthController } from './health/health.controller';
     PlansModule,
     ProvisioningModule,
     ServicesModule,
+    OrdersModule,
+    PaymentsModule,
   ],
   controllers: [HealthController],
   providers: [

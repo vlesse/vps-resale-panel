@@ -3,6 +3,7 @@
  * 跑法：npx ts-node scripts/selfcheck.ts
  */
 import { execFileSync } from 'child_process';
+import { createHash } from 'crypto';
 import { writeFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -16,6 +17,7 @@ import {
 import { buildBootstrapScript } from '../src/providers/bootstrap.util';
 import { toInstanceName } from '../src/providers/provider.types';
 import { parseProbeOutput } from '../src/providers/ssh-exec.util';
+import { JeepayDriver } from '../src/payments/drivers/jeepay.driver';
 
 let failed = 0;
 const check = (name: string, ok: boolean, extra = '') => {
@@ -118,6 +120,58 @@ check('紧凑格式也能解析', p2.diskUsedGb === 1 && p2.diskTotalGb === 20 &
 const garbage = parseProbeOutput('bash: command not found\nsome noise');
 check('输出是垃圾时不抛错', typeof garbage === 'object');
 check('垃圾输入下各字段是 undefined 而不是 NaN', garbage.cpuPercent === undefined && garbage.diskUsedGb === undefined);
+
+console.log('\n[7] Jeepay 签名 —— 错一个字节网关只会回「签名错误」四个字');
+const jee = new JeepayDriver();
+const KEY = 'test_app_secret_123';
+
+// 手工按规则算一遍标准答案，和实现对拍
+const sample = { mchNo: 'M001', appId: 'app1', amount: 4500, mchOrderNo: 'ORD1' };
+const manual = createHash('md5')
+  .update('amount=4500&appId=app1&mchNo=M001&mchOrderNo=ORD1&key=' + KEY, 'utf8')
+  .digest('hex')
+  .toUpperCase();
+check('签名与手工按规则计算的结果一致', jee.sign(sample, KEY) === manual, jee.sign(sample, KEY).slice(0, 16) + '…');
+check('参数顺序不影响结果（内部按 ASCII 排序）',
+  jee.sign({ appId: 'app1', amount: 4500, mchOrderNo: 'ORD1', mchNo: 'M001' }, KEY) === manual);
+check('结果是大写十六进制', /^[0-9A-F]{32}$/.test(jee.sign(sample, KEY)));
+
+// 这一条是踩过的坑：用 if (v) 过滤会把数字 0 和字符串 "0" 一起扔掉，
+// 而网关那边是把它算进签名的，于是永远「签名错误」，还查不出来。
+const withZero = { ...sample, state: 0, refundAmount: '0' };
+const zeroManual = createHash('md5')
+  .update('amount=4500&appId=app1&mchNo=M001&mchOrderNo=ORD1&refundAmount=0&state=0&key=' + KEY, 'utf8')
+  .digest('hex')
+  .toUpperCase();
+check('值为 0 的参数必须参与签名', jee.sign(withZero, KEY) === zeroManual);
+check('空字符串参数必须排除', jee.sign({ ...sample, extra: '' }, KEY) === manual);
+check('null / undefined 参数必须排除',
+  jee.sign({ ...sample, a: null, b: undefined } as any, KEY) === manual);
+check('sign 字段本身不参与签名', jee.sign({ ...sample, sign: 'WHATEVER' }, KEY) === manual);
+
+// 验签
+const signed = { ...sample, sign: manual };
+check('自己签的自己能验过', jee.verify(signed, KEY));
+check('换个密钥验不过', !jee.verify(signed, 'wrong_secret'));
+check('改了金额验不过', !jee.verify({ ...signed, amount: 1 }, KEY));
+check('没有 sign 字段直接拒绝', !jee.verify(sample as any, KEY));
+check('签名长度不对不会抛错只会返回 false', !jee.verify({ ...sample, sign: 'SHORT' }, KEY));
+
+// 回调解析：只有 state=2 才是成功
+const notifyBase = { mchOrderNo: 'ORD1', payOrderId: 'P1', amount: 4500 };
+const mk = (state: number) => {
+  const p: any = { ...notifyBase, state };
+  p.sign = jee.sign(p, KEY);
+  return p;
+};
+check('state=2 判定为支付成功', jee.parseNotify(mk(2), { appSecret: KEY } as any).success);
+for (const s of [0, 1, 3, 4, 5, 6]) {
+  check(`state=${s} 不能判成成功`, !jee.parseNotify(mk(s), { appSecret: KEY } as any).success);
+}
+check('验签不过时 valid=false 且 success=false', (() => {
+  const r = jee.parseNotify({ ...notifyBase, state: 2, sign: 'FAKE' }, { appSecret: KEY } as any);
+  return !r.valid && !r.success;
+})());
 
 console.log(failed === 0 ? '\n全部通过\n' : `\n有 ${failed} 项没过\n`);
 process.exit(failed === 0 ? 0 : 1);

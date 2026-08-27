@@ -149,14 +149,20 @@ export class GcpProvider implements VpsProvider {
     const progress = req.onProgress ?? (() => undefined);
 
     const instances = new InstancesClient(opts);
-    let staticIpName: string | undefined;
+    const staticIpName = spec.staticIp ? `${instanceName}-ip` : undefined;
     let natIP: string | undefined;
 
+    // 0. 先把「我要建什么」告诉上层并落库。任何一步炸了，回滚都有据可查。
+    await req.onRefKnown?.({ projectId: project, zone, instanceName, staticIpName });
+
     // 1. 静态 IP。必须在建机之前占好，因为它要作为参数传进实例。
-    if (spec.staticIp) {
+    if (staticIpName) {
       await progress(6, '申请静态公网 IP');
-      staticIpName = `${instanceName}-ip`;
-      natIP = await this.ensureStaticIp(opts, project, region, staticIpName);
+      try {
+        natIP = await this.ensureStaticIp(opts, project, region, staticIpName);
+      } catch (err: any) {
+        throw new Error(this.explain(err));
+      }
     }
 
     // 2. 提交建机请求
@@ -229,7 +235,9 @@ export class GcpProvider implements VpsProvider {
 
     // 3. 取公网 IP
     await progress(55, '读取实例网络信息');
-    const ip = natIP ?? (await this.fetchExternalIp(opts, project, zone, instanceName));
+    const ip = natIP ?? (await this.fetchExternalIp(opts, project, zone, instanceName).catch((err) => {
+      throw new Error(this.explain(err));
+    }));
     if (!ip) {
       throw new Error('实例建出来了但没拿到公网 IP，请检查套餐里的网络配置是否给了外部访问权限');
     }
@@ -490,11 +498,17 @@ export class GcpProvider implements VpsProvider {
       region,
       addressResource: { name, addressType: 'EXTERNAL', networkTier: 'PREMIUM' },
     });
-    await this.waitRegionOp(opts, project, region, this.opName(op));
 
-    const [created] = await addresses.get({ project, region, address: name });
-    if (!created?.address) throw new Error('静态 IP 申请成功但没拿到地址');
-    return created.address;
+    // 从这里开始地址已经真实存在并开始计费了，后面任何一步失败都必须还回去
+    try {
+      await this.waitRegionOp(opts, project, region, this.opName(op));
+      const [created] = await addresses.get({ project, region, address: name });
+      if (!created?.address) throw new Error('静态 IP 申请成功但没拿到地址');
+      return created.address;
+    } catch (err) {
+      await this.releaseStaticIp(opts, project, region, name).catch(() => undefined);
+      throw err;
+    }
   }
 
   private async releaseStaticIp(opts: any, project: string, region: string, name: string) {
