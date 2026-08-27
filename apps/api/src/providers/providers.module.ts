@@ -12,6 +12,9 @@ import { ProxmoxProvider } from './drivers/proxmox.provider';
 @Global()
 @Module({
   providers: [GcpProvider, LightsailProvider, SshProvider, ProxmoxProvider, ProviderRegistry],
-  exports: [ProviderRegistry],
+  // 绝大多数地方只该用 ProviderRegistry（按机器的 provider 字段自动分发）。
+  // 单个驱动也导出，是因为个别能力天生只属于某一家：比如「测这台机器能不能 SSH 登进去」
+  // 只有 ssh 驱动有，硬塞进统一接口会让另外三个驱动多出三个假实现。
+  exports: [ProviderRegistry, GcpProvider, LightsailProvider, SshProvider, ProxmoxProvider],
 })
 export class ProvidersModule {}

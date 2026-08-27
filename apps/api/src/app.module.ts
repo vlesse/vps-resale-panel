@@ -13,6 +13,7 @@ import { PlansModule } from './plans/plans.module';
 import { ServicesModule } from './services/services.module';
 import { OrdersModule } from './orders/orders.module';
 import { PaymentsModule } from './payments/payments.module';
+import { MachinesModule } from './machines/machines.module';
 import { JwtAuthGuard } from './auth/auth.decorators';
 import { HealthController } from './health/health.controller';
 
@@ -45,6 +46,7 @@ import { HealthController } from './health/health.controller';
     ServicesModule,
     OrdersModule,
     PaymentsModule,
+    MachinesModule,
   ],
   controllers: [HealthController],
   providers: [
