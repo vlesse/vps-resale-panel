@@ -236,7 +236,24 @@ export class PlansService {
   async update(id: bigint, dto: Partial<PlanInput>) {
     const existing = await this.prisma.plan.findUnique({ where: { id } });
     if (!existing) throw new NotFoundException('套餐不存在');
-    await this.validate({ ...existing, ...dto } as PlanInput, id);
+
+    // 数据库字段名和接口字段名不一样（providerSpecJson vs providerSpec），
+    // 直接把两个对象摊平合并的话，只改个名字也会被判成「缺建机参数」。
+    // 先把数据库行翻译成接口的形状，再让请求体覆盖上去。
+    const current: PlanInput = {
+      name: existing.name,
+      slug: existing.slug,
+      provider: existing.provider,
+      fulfillment: existing.fulfillment,
+      cloudAccountId: existing.cloudAccountId?.toString() ?? null,
+      providerSpec: (existing.providerSpecJson ?? undefined) as Record<string, any> | undefined,
+      matchRules: (existing.matchRulesJson ?? undefined) as Record<string, any> | undefined,
+      regionLabel: existing.regionLabel,
+      cpu: existing.cpu,
+      memoryMb: existing.memoryMb,
+      diskGb: existing.diskGb,
+    };
+    await this.validate({ ...current, ...dto }, id);
 
     await this.prisma.plan.update({ where: { id }, data: this.toData(dto, true) });
     if (dto.prices?.length) await this.upsertPrices(id, dto.prices);
