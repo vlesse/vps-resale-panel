@@ -9,6 +9,8 @@ import { ProvisioningModule } from './provisioning/provisioning.module';
 import { CaptchaModule } from './captcha/captcha.module';
 import { AuthModule } from './auth/auth.module';
 import { CloudAccountsModule } from './cloud-accounts/cloud-accounts.module';
+import { PlansModule } from './plans/plans.module';
+import { ServicesModule } from './services/services.module';
 import { JwtAuthGuard } from './auth/auth.decorators';
 import { HealthController } from './health/health.controller';
 
@@ -36,7 +38,9 @@ import { HealthController } from './health/health.controller';
     CaptchaModule,
     AuthModule,
     CloudAccountsModule,
+    PlansModule,
     ProvisioningModule,
+    ServicesModule,
   ],
   controllers: [HealthController],
   providers: [
