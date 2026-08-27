@@ -1,0 +1,11 @@
+# 这些文件最终都是在 Linux 容器里跑的，行尾必须是 LF。
+# 带 CRLF 的 shell 脚本在 Linux 上会报 "bad interpreter: no such file or directory"，
+# 是个非常难查的错。
+* text=auto eol=lf
+*.sh        text eol=lf
+Caddyfile   text eol=lf
+*.Dockerfile text eol=lf
+*.yml       text eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
