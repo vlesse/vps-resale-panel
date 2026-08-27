@@ -197,7 +197,10 @@ const PROBE_SCRIPT = [
   'ma=$(awk "/MemAvailable/{print int(\\$2/1024)}" /proc/meminfo)',
   'up=$(cut -d. -f1 /proc/uptime)',
   'la=$(cut -d" " -f1 /proc/loadavg)',
-  'dsk=$(df -BG --output=used,size / | tail -1 | tr -dc "0-9 ")',
+  // 用 df -Pk 而不是 df --output：后者是 GNU 专有的，用户把机器重装成
+  // busybox 系或别的发行版就没了。-P 保证一行一个文件系统不换行，
+  // -k 保证单位是 1K 块，$2 是总量 $3 是已用。
+  "dsk=$(df -Pk / | awk 'NR==2{printf \"%d %d\", int($3/1048576), int($2/1048576)}')",
   'net=$(awk -F"[: ]+" \'NR>2 && $2!="lo" {ri+=$3; to+=$11} END{print ri" "to}\' /proc/net/dev)',
   'echo "CPU=$cpu MEMTOTAL=$mt MEMAVAIL=$ma UPTIME=$up LOAD=$la DISK=$dsk NET=$net"',
 ].join('; ');
@@ -216,14 +219,27 @@ export interface ProbeResult {
 
 export async function probeMachine(target: SshTarget): Promise<ProbeResult> {
   const res = await sshExec(target, PROBE_SCRIPT, 25000);
-  const out = res.stdout.trim();
+  return parseProbeOutput(res.stdout);
+}
+
+/**
+ * 解析采集脚本的输出。
+ *
+ * 单独抽出来是为了能离线测 —— 这里踩过一次坑：df 的输出带前导空格，
+ * 而正则要求 `DISK=` 后面紧跟数字，结果在真机上磁盘用量一直是 undefined，
+ * 本地怎么看都看不出来。scripts/selfcheck.ts 里有对应的回归用例。
+ */
+export function parseProbeOutput(stdout: string): ProbeResult {
+  const out = stdout.trim();
   const pick = (key: string): string | undefined =>
     new RegExp(`${key}=([^\\s]+)`).exec(out)?.[1];
 
   const memTotal = num(pick('MEMTOTAL'));
   const memAvail = num(pick('MEMAVAIL'));
-  const disk = /DISK=([0-9]+)\s+([0-9]+)/.exec(out);
-  const net = /NET=([0-9]+)\s+([0-9]+)/.exec(out);
+  // 允许 = 后面有空白：不同发行版的 df/awk 输出对齐方式不一样，
+  // 之前这里写成紧跟数字，在真机上就采不到磁盘数据了
+  const disk = /DISK=\s*([0-9]+)\s+([0-9]+)/.exec(out);
+  const net = /NET=\s*([0-9]+)\s+([0-9]+)/.exec(out);
 
   return {
     cpuPercent: num(pick('CPU')),

@@ -15,6 +15,7 @@ import {
 } from '../src/crypto/crypto.util';
 import { buildBootstrapScript } from '../src/providers/bootstrap.util';
 import { toInstanceName } from '../src/providers/provider.types';
+import { parseProbeOutput } from '../src/providers/ssh-exec.util';
 
 let failed = 0;
 const check = (name: string, ok: boolean, extra = '') => {
@@ -93,6 +94,30 @@ for (const [input, want] of cases) {
   check(`"${input}" → "${got}"`, want.test(got));
 }
 check('超长编号被截到 62 字符内', toInstanceName('x'.repeat(200)).length <= 62);
+
+console.log('\n[6] 状态采集的解析 —— 真机上栽过一次的地方');
+// 下面这段是 2026-08-27 从真机（Debian 13）上原样抓下来的输出。
+// df 的两个数字前面带空格，当时正则要求 DISK= 后紧跟数字，磁盘用量一直是 undefined，
+// 本地看代码完全看不出来。这条用例就是为了不让它再回来。
+const realOutput =
+  'CPU=10 MEMTOTAL=7945 MEMAVAIL=4977 UPTIME=1722219 LOAD=0.9 DISK=  23       48 NET=227404107888 197798043599';
+const probe = parseProbeOutput(realOutput);
+check('磁盘已用解析正确（前导空格不能吃掉它）', probe.diskUsedGb === 23, String(probe.diskUsedGb));
+check('磁盘总量解析正确', probe.diskTotalGb === 48, String(probe.diskTotalGb));
+check('内存已用 = 总量 - 可用', probe.memUsedMb === 7945 - 4977, String(probe.memUsedMb));
+check('CPU 解析正确', probe.cpuPercent === 10);
+check('负载是小数不是整数', probe.loadAvg1 === 0.9);
+check('网络累计字节是大数（不能被截断）', probe.netInBytes === 227404107888);
+
+// 紧凑格式（没有多余空格）也要能解析，不同发行版的 awk 对齐方式不一样
+const tight = 'CPU=5 MEMTOTAL=1024 MEMAVAIL=512 UPTIME=60 LOAD=0.01 DISK=1 20 NET=100 200';
+const p2 = parseProbeOutput(tight);
+check('紧凑格式也能解析', p2.diskUsedGb === 1 && p2.diskTotalGb === 20 && p2.netOutBytes === 200);
+
+// 机器返回垃圾时不能崩，要优雅地返回 undefined
+const garbage = parseProbeOutput('bash: command not found\nsome noise');
+check('输出是垃圾时不抛错', typeof garbage === 'object');
+check('垃圾输入下各字段是 undefined 而不是 NaN', garbage.cpuPercent === undefined && garbage.diskUsedGb === undefined);
 
 console.log(failed === 0 ? '\n全部通过\n' : `\n有 ${failed} 项没过\n`);
 process.exit(failed === 0 ? 0 : 1);
