@@ -1,0 +1,121 @@
+/**
+ * 自检脚本：验证那些「写错了不会立刻报错、但会在生产上悄悄坏掉」的地方。
+ * 跑法：npx ts-node scripts/selfcheck.ts
+ */
+import { execFileSync } from 'child_process';
+import { writeFileSync, unlinkSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+import { utils } from 'ssh2';
+import {
+  decryptJson,
+  encryptJson,
+  generatePassword,
+  generateSshKeyPair,
+} from '../src/crypto/crypto.util';
+import { buildBootstrapScript } from '../src/providers/bootstrap.util';
+import { toInstanceName } from '../src/providers/provider.types';
+
+let failed = 0;
+const check = (name: string, ok: boolean, extra = '') => {
+  if (!ok) failed++;
+  console.log(`${ok ? '  ✓' : '  ✗'} ${name}${extra ? '  ' + extra : ''}`);
+};
+
+console.log('\n[1] SSH 公钥编码 —— 拼错的话每台交付的机器都进不去');
+const kp = generateSshKeyPair('panel-test');
+const parsed = utils.parseKey(kp.privateKeyPem);
+if (parsed instanceof Error) {
+  check('ssh2 能解析我们生成的私钥', false, parsed.message);
+} else {
+  check('ssh2 能解析我们生成的私钥', true, `类型 ${parsed.type}`);
+  const mine = Buffer.from(kp.publicKeyOpenssh.split(' ')[1], 'base64');
+  const theirs = parsed.getPublicSSH();
+  check(
+    '我们手工拼的公钥与 ssh2 推导的二进制一致',
+    Buffer.compare(mine, theirs) === 0,
+    `${mine.length} 字节`,
+  );
+  check('公钥是 authorized_keys 的合法格式', /^ssh-rsa [A-Za-z0-9+/]+=* \S+$/.test(kp.publicKeyOpenssh));
+}
+
+console.log('\n[2] 凭据加解密 —— 关系到云账号密钥和每台机器的密码');
+const secret = 'x'.repeat(40);
+const payload = { projectId: 'demo', nested: { k: [1, 2, '三'] }, 中文键: '中文值' };
+const blob = encryptJson(secret, payload);
+check('加解密往返数据一致', JSON.stringify(decryptJson(secret, blob)) === JSON.stringify(payload));
+check('两次加密同样内容密文不同（IV 随机）', encryptJson(secret, payload) !== blob);
+
+const flip = (s: string) => s.slice(0, -2) + (s.slice(-2, -1) === 'A' ? 'B' : 'A') + s.slice(-1);
+check('密文被篡改会抛错而不是返回错数据', throws(() => decryptJson(secret, flip(blob))));
+check('换一个密钥解不开', throws(() => decryptJson('y'.repeat(40), blob)));
+check('密钥太短直接拒绝', throws(() => encryptJson('short', payload)));
+
+console.log('\n[3] 交付密码 —— 要能过各家系统的密码策略，还要方便用户手抄');
+const pws = Array.from({ length: 500 }, () => generatePassword(16));
+check('长度都是 16', pws.every((p) => p.length === 16));
+check(
+  '都含大写/小写/数字/符号',
+  pws.every((p) => /[A-Z]/.test(p) && /[a-z]/.test(p) && /[0-9]/.test(p) && /[!@#%^*\-_=+]/.test(p)),
+);
+check('不含易抄错的 O 0 l I 1', pws.every((p) => !/[O0lI1]/.test(p)), `样例 ${pws[0]}`);
+check('500 个互不重复', new Set(pws).size === 500);
+
+console.log('\n[4] 初始化脚本 —— 密码里的特殊字符不能把 shell 搞断');
+// 下面每一个字符在没转义时都能把命令搞断，甚至变成命令注入
+const nasty = `a'b"c$d\`e;f|g&h i*j(k)`;
+const script = buildBootstrapScript({
+  username: 'root',
+  password: nasty,
+  publicKeyOpenssh: kp.publicKeyOpenssh,
+  hostname: 'test-host',
+});
+// 不做字符串比对，直接丢给真的 bash 跑一遍，看密码能不能一字不差还原出来
+const chpasswdLine = script.split('\n').find((l) => l.includes('| chpasswd'))!;
+const echoOnly = chpasswdLine.replace(/\s*\|\s*chpasswd\s*$/, '');
+const roundTrip = execFileSync('bash', ['-c', echoOnly], { encoding: 'utf8' }).replace(/\r?\n$/, '');
+check('bash 解析后密码一字不差', roundTrip === `root:${nasty}`, `得到 ${JSON.stringify(roundTrip)}`);
+check('整段脚本 bash -n 语法检查通过', bashSyntaxOk(script));
+check('sshd 覆盖文件用 00 开头（否则压不过云镜像的 60-）', script.includes('/etc/ssh/sshd_config.d/00-vps-panel.conf'));
+check('写了完成标记文件', script.includes('/var/lib/vps-panel-bootstrap.done'));
+check('开了 BBR', script.includes('tcp_congestion_control=bbr'));
+
+console.log('\n[5] 实例命名 —— 各家云都要求小写字母开头');
+const cases: [string, RegExp][] = [
+  // 大写编号小写后已经是字母打头，本来就不需要再加前缀
+  ['ORD250827abc123', /^ord250827abc123$/],
+  ['9start', /^vps-9start$/],
+  ['a_b.c!d', /^a-b-c-d$/],
+  ['--lead--', /^lead$/],
+];
+for (const [input, want] of cases) {
+  const got = toInstanceName(input);
+  check(`"${input}" → "${got}"`, want.test(got));
+}
+check('超长编号被截到 62 字符内', toInstanceName('x'.repeat(200)).length <= 62);
+
+console.log(failed === 0 ? '\n全部通过\n' : `\n有 ${failed} 项没过\n`);
+process.exit(failed === 0 ? 0 : 1);
+
+function throws(fn: () => unknown): boolean {
+  try {
+    fn();
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/** 把脚本写到临时文件用 bash -n 做语法检查，能抓出引号不配对这类问题 */
+function bashSyntaxOk(script: string): boolean {
+  const f = join(tmpdir(), `vps-bootstrap-check-${Date.now()}.sh`);
+  try {
+    writeFileSync(f, script, 'utf8');
+    execFileSync('bash', ['-n', f], { stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    try { unlinkSync(f); } catch { /* 已经没了就算了 */ }
+  }
+}

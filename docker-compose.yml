@@ -1,0 +1,131 @@
+# ============================================================
+#  VPS 转售面板 —— 一键部署
+#
+#  用法（在一台干净的 Ubuntu 上）：
+#     cp .env.example .env
+#     nano .env          ← 把里面标了「要改」的项目填好
+#     docker compose up -d
+#
+#  就这三步。装 Node、装 MySQL、装 Nginx、申请 HTTPS 证书都不用你管，
+#  证书由 Caddy 自动申请和自动续期。
+#
+#  看日志：      docker compose logs -f api
+#  重启某个服务： docker compose restart api
+#  全部停掉：    docker compose down
+#  停掉并删数据： docker compose down -v   ← 危险，数据库会被清空
+# ============================================================
+
+services:
+  # ---------- 数据库 ----------
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      # 1GB 内存的小机器上跑得动
+      - --innodb-buffer-pool-size=256M
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: vps_resale
+      MYSQL_USER: vps
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      # 等到数据库真的能接受连接为止，否则 api 会启动失败
+      test: ['CMD', 'mysqladmin', 'ping', '-h', '127.0.0.1', '-uroot', '-p${MYSQL_ROOT_PASSWORD}']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+
+  # ---------- 任务队列 ----------
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --save 60 1 --appendonly no
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # ---------- 后端 ----------
+  api:
+    build:
+      context: .
+      dockerfile: deploy/api.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: mysql://vps:${MYSQL_PASSWORD}@mysql:3306/vps_resale
+      REDIS_URL: redis://redis:6379
+      PORT: 3000
+      PUBLIC_BASE_URL: https://${PANEL_DOMAIN}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRES_IN: 7d
+      CREDENTIALS_SECRET: ${CREDENTIALS_SECRET}
+      BOOTSTRAP_ADMIN_EMAIL: ${ADMIN_EMAIL}
+      BOOTSTRAP_ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      MAX_ACTIVE_SERVICES_PER_USER: ${MAX_ACTIVE_SERVICES_PER_USER:-5}
+      MAX_DAILY_PROVISION: ${MAX_DAILY_PROVISION:-50}
+      ORDER_EXPIRE_MINUTES: ${ORDER_EXPIRE_MINUTES:-30}
+      PROVISION_ROLLBACK_ON_FAIL: 'true'
+      DEFAULT_SSH_USER: root
+      ENABLE_BBR_ON_PROVISION: 'true'
+      LOG_LEVEL: ${LOG_LEVEL:-log}
+    healthcheck:
+      test: ['CMD', 'node', '-e', "require('http').get('http://127.0.0.1:3000/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+  # ---------- 前端 ----------
+  web:
+    build:
+      context: .
+      dockerfile: deploy/web.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+    environment:
+      # 前端在服务器内部调后端走容器名，浏览器里调走 /api 由 Caddy 转发
+      API_INTERNAL_URL: http://api:3000
+      NEXT_PUBLIC_SITE_NAME: ${SITE_NAME:-RenrenYings Cloud}
+      PORT: 3000
+
+  # ---------- 入口 + 自动 HTTPS ----------
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp'
+    depends_on:
+      - api
+      - web
+    environment:
+      PANEL_DOMAIN: ${PANEL_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # 证书存这里。删掉这个卷会导致重新申请证书，
+      # Let's Encrypt 有频率限制，别没事删它。
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  mysql-data:
+  redis-data:
+  caddy-data:
+  caddy-config:

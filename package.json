@@ -1,0 +1,16 @@
+{
+  "name": "vps-resale-panel",
+  "version": "1.0.0",
+  "private": true,
+  "description": "多云 VPS 转售面板 —— 谷歌云 / AWS Lightsail 下单即开，自有机器库存池分配",
+  "workspaces": ["apps/api", "apps/web"],
+  "scripts": {
+    "dev:api": "npm run start:dev -w apps/api",
+    "dev:web": "npm run dev -w apps/web",
+    "build": "npm run build -w apps/api && npm run build -w apps/web",
+    "prisma:generate": "npm run prisma:generate -w apps/api",
+    "prisma:push": "npm run prisma:push -w apps/api"
+  },
+  "engines": { "node": ">=20" },
+  "license": "ISC"
+}

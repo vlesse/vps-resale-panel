@@ -1,0 +1,39 @@
+# Caddy 负责两件事：把请求分发给前端和后端，以及自动申请和续期 HTTPS 证书。
+#
+# 证书是全自动的：只要域名的 A 记录已经指向这台服务器、80 和 443 端口没被占，
+# Caddy 第一次启动时就会自己去 Let's Encrypt 申请，到期前自己续。
+# 你不需要执行任何 certbot 命令，也不需要配置定时任务。
+
+{
+	email {$ACME_EMAIL}
+	# 想先拿测试证书试跑，把下面这行的注释去掉（浏览器会警告，但不消耗正式频率配额）
+	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+{$PANEL_DOMAIN} {
+	encode zstd gzip
+
+	# 后端接口
+	handle /api/* {
+		reverse_proxy api:3000 {
+			health_uri /api/health
+		}
+	}
+
+	# 支付平台的异步回调。这条必须能通，否则用户付了钱订单不会变成已支付。
+	handle /payments/* {
+		reverse_proxy api:3000
+	}
+
+	# 其余全部交给前端
+	handle {
+		reverse_proxy web:3000
+	}
+
+	log {
+		output file /data/access.log {
+			roll_size 20mb
+			roll_keep 5
+		}
+	}
+}

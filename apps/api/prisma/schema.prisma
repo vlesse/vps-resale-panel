@@ -1,0 +1,521 @@
+// ============================================================
+//  多云 VPS 转售面板 —— 数据模型
+//
+//  与上一代模型最大的不同：不再区分「库存机」和「云实例」两套东西。
+//  统一成一张 Machine 表，靠 Plan.fulfillment 决定它什么时候被创建：
+//
+//    on_demand  付款后调云厂商 API 现建 → 这时才写 Machine 行
+//    inventory  你提前建好机器写进 Machine（ready）→ 下单时分配
+//
+//  这样开机/关机/重启/改密/重装/销毁对两种履约方式是同一条代码路径。
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- 枚举 ----------
+
+/// 驱动类型。前两个能自己创建机器，后两个只能操作已存在的机器。
+enum ProviderKind {
+  gcp // 谷歌云 Compute Engine
+  lightsail // AWS Lightsail
+  ssh // 任意能 SSH 进去的机器（自有 / 其它上游）
+  proxmox // 自建 Proxmox VE 虚拟机
+}
+
+/// 套餐怎么履约
+enum Fulfillment {
+  on_demand // 付款后现调 API 建机
+  inventory // 从 ready 库存池里分配一台
+}
+
+enum UserRole {
+  customer
+  admin
+}
+
+enum UserStatus {
+  active
+  blocked
+}
+
+enum CurrencyCode {
+  CNY
+  USD
+}
+
+enum BillingCycle {
+  monthly
+  quarterly
+  yearly
+}
+
+/// 机器生命周期。前四个只有库存模式会经历。
+enum MachineStatus {
+  sourcing // 采购中
+  optimizing // 优化中（装 BBR、调线路、装组件）
+  ready // 待售
+  reserved // 已被某张订单锁定，等付款
+  provisioning // 正在向云厂商创建
+  running // 已交付，开机中
+  stopped // 已交付，关机中
+  rebuilding // 重装中
+  suspended // 停用（到期 / 欠费 / 违规）
+  releasing // 正在销毁
+  released // 已销毁，行只作历史留存
+  error // 出错，需人工介入
+}
+
+enum OrderKind {
+  new // 新购
+  renew // 续费
+}
+
+enum OrderStatus {
+  pending_payment
+  paid
+  provisioning
+  completed
+  cancelled
+  refunded
+  failed
+}
+
+enum PaymentStatus {
+  pending
+  success
+  failed
+}
+
+enum ServiceStatus {
+  provisioning
+  active
+  stopped
+  suspended
+  expired
+  cancelled
+  error
+}
+
+enum ServiceActionType {
+  status_check
+  start
+  stop
+  reboot
+  reset_password
+  rebuild
+  sync_metrics
+}
+
+enum ServiceActionStatus {
+  queued
+  running
+  success
+  failed
+}
+
+enum JobStatus {
+  queued
+  running
+  success
+  failed
+}
+
+enum JobKind {
+  provision // 建机 + 交付
+  rebuild // 重装
+  release // 销毁
+}
+
+// ---------- 账号 ----------
+
+model User {
+  id              BigInt     @id @default(autoincrement())
+  email           String     @unique @db.VarChar(191)
+  passwordHash    String     @map("password_hash") @db.VarChar(255)
+  displayName     String?    @map("display_name") @db.VarChar(64)
+  phone           String?    @db.VarChar(32)
+  emailVerifiedAt DateTime?  @map("email_verified_at")
+  role            UserRole   @default(customer)
+  status          UserStatus @default(active)
+
+  /// 反刷单闸门：该用户最多能同时持有多少台在跑的机器。0 = 用全局默认值。
+  maxActiveServices Int @default(0) @map("max_active_services")
+
+  lastLoginAt DateTime? @map("last_login_at")
+  lastLoginIp String?   @map("last_login_ip") @db.VarChar(64)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  orders   Order[]
+  services Service[]
+  logs     OperationLog[]
+
+  @@map("users")
+}
+
+// ---------- 你的云账号 ----------
+
+/// 运营方自己在各云厂商的账号凭据。支持一家云挂多个账号（多项目 / 多区域配额）。
+/// credentialsEncrypted 是 AES-256-GCM 密文，明文形状随 provider 不同：
+///   gcp       { "projectId": "...", "serviceAccountKey": { ...JSON 全文... } }
+///   lightsail { "accessKeyId": "...", "secretAccessKey": "...", "region": "ap-southeast-1" }
+///   proxmox   { "host": "10.0.0.5", "node": "pve", "tokenId": "root@pam!panel", "tokenSecret": "..." }
+///   ssh       不需要账号，凭据直接挂在每台 Machine 上
+model CloudAccount {
+  id                   BigInt       @id @default(autoincrement())
+  name                 String       @db.VarChar(120)
+  provider             ProviderKind
+  credentialsEncrypted String       @map("credentials_encrypted") @db.Text
+  defaultRegion        String?      @map("default_region") @db.VarChar(64)
+
+  /// 该账号每天最多允许创建多少台机器，防止刷单烧云账单。
+  dailyCreateQuota Int @default(20) @map("daily_create_quota")
+
+  isEnabled      Boolean   @default(true) @map("is_enabled")
+  lastCheckedAt  DateTime? @map("last_checked_at")
+  lastCheckError String?   @map("last_check_error") @db.VarChar(500)
+  notes          String?   @db.Text
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  plans    Plan[]
+  machines Machine[]
+
+  @@index([provider, isEnabled])
+  @@map("cloud_accounts")
+}
+
+// ---------- 商品 ----------
+
+model Plan {
+  id   BigInt @id @default(autoincrement())
+  name String @db.VarChar(120)
+  slug String @unique @db.VarChar(120)
+
+  provider    ProviderKind
+  fulfillment Fulfillment  @default(on_demand)
+
+  /// on_demand 必填；inventory 留空（机器凭据挂在 Machine 上）
+  cloudAccountId BigInt? @map("cloud_account_id")
+
+  /// 建机参数，形状随 provider 不同。见 docs/03-接入谷歌云.md 与 docs/04-接入-AWS-Lightsail.md
+  ///   gcp       { zone, machineType, sourceImage, diskGb, diskType, staticIp }
+  ///   lightsail { availabilityZone, bundleId, blueprintId, staticIp }
+  ///   proxmox   { templateVmid, storage, bridge }
+  providerSpecJson Json? @map("provider_spec_json")
+
+  /// inventory 模式下从库存池挑机器的筛选条件
+  ///   { regions: [...], minCpu: 2, minMemoryMb: 2048, tagsAny: [...] }
+  matchRulesJson Json? @map("match_rules_json")
+
+  // 对外展示的规格
+  regionLabel    String  @map("region_label") @db.VarChar(64)
+  cpu            Int
+  memoryMb       Int     @map("memory_mb")
+  diskGb         Int     @map("disk_gb")
+  trafficGb      Int?    @map("traffic_gb")
+  bandwidthLabel String? @map("bandwidth_label") @db.VarChar(64)
+  osTemplate     String? @map("os_template") @db.VarChar(64)
+  description    String? @db.Text
+  featuresJson   Json?   @map("features_json")
+
+  /// 该套餐最多卖出多少台在跑的机器，卖满即显示无货。0 = 不限。
+  capacityLimit Int @default(0) @map("capacity_limit")
+
+  isEnabled Boolean  @default(true) @map("is_enabled")
+  sortOrder Int      @default(0) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  cloudAccount CloudAccount? @relation(fields: [cloudAccountId], references: [id])
+  prices       PlanPrice[]
+  orders       Order[]
+  services     Service[]
+  machines     Machine[]
+
+  @@index([isEnabled, sortOrder])
+  @@map("plans")
+}
+
+model PlanPrice {
+  id         BigInt       @id @default(autoincrement())
+  planId     BigInt       @map("plan_id")
+  cycle      BillingCycle @default(monthly)
+  currency   CurrencyCode
+  priceCents Int          @map("price_cents")
+  isEnabled  Boolean      @default(true) @map("is_enabled")
+  createdAt  DateTime     @default(now()) @map("created_at")
+  updatedAt  DateTime     @updatedAt @map("updated_at")
+
+  plan   Plan    @relation(fields: [planId], references: [id], onDelete: Cascade)
+  orders Order[]
+
+  @@unique([planId, cycle, currency])
+  @@map("plan_prices")
+}
+
+// ---------- 机器 ----------
+
+/// 一台真实机器。按需模式下由建机任务写入，库存模式下由管理员提前录入。
+model Machine {
+  id             BigInt       @id @default(autoincrement())
+  code           String       @unique @db.VarChar(64)
+  provider       ProviderKind
+  cloudAccountId BigInt?      @map("cloud_account_id")
+  planId         BigInt?      @map("plan_id")
+
+  /// 在云厂商那边的身份，用来发后续指令。形状随 provider 不同：
+  ///   gcp       { projectId, zone, instanceName, staticIpName? }
+  ///   lightsail { region, instanceName, staticIpName? }
+  ///   proxmox   { node, vmid }
+  ///   ssh       {}（靠下面的 ip / sshPort 定位）
+  providerRefJson Json? @map("provider_ref_json")
+
+  /// AES-256-GCM 密文。明文 { sshUser, sshPort, password?, privateKey? }
+  authPayloadEncrypted String? @map("auth_payload_encrypted") @db.Text
+
+  ip         String? @db.VarChar(64)
+  ipv6       String? @db.VarChar(128)
+  sshPort    Int     @default(22) @map("ssh_port")
+  region     String  @db.VarChar(64)
+  cpu        Int
+  memoryMb   Int     @map("memory_mb")
+  diskGb     Int     @map("disk_gb")
+  osTemplate String? @map("os_template") @db.VarChar(64)
+
+  /// 库存模式的优化标签 ["bbr","cn2-gia","warp"]
+  optimizeTagsJson Json? @map("optimize_tags_json")
+
+  status MachineStatus @default(sourcing)
+
+  /// 乐观锁。分配库存时用 updateMany(where:{version}) 保证不超卖。
+  version Int @default(0)
+
+  costCents        Int?          @map("cost_cents")
+  costCurrency     CurrencyCode? @default(CNY) @map("cost_currency")
+  upstreamExpireAt DateTime?     @map("upstream_expire_at")
+
+  lastStatusJson Json?     @map("last_status_json")
+  lastCheckedAt  DateTime? @map("last_checked_at")
+  lastError      String?   @map("last_error") @db.VarChar(500)
+  releasedAt     DateTime? @map("released_at")
+  notes          String?   @db.Text
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  cloudAccount CloudAccount?  @relation(fields: [cloudAccountId], references: [id])
+  plan         Plan?          @relation(fields: [planId], references: [id])
+  service      Service?
+  jobs         ProvisionJob[]
+
+  @@index([status, region])
+  @@index([planId, status])
+  @@index([upstreamExpireAt])
+  @@map("machines")
+}
+
+// ---------- 交易 ----------
+
+model Order {
+  id          BigInt       @id @default(autoincrement())
+  orderNo     String       @unique @map("order_no") @db.VarChar(64)
+  kind        OrderKind    @default(new)
+  userId      BigInt       @map("user_id")
+  planId      BigInt       @map("plan_id")
+  planPriceId BigInt       @map("plan_price_id")
+  cycle       BillingCycle @default(monthly)
+  amountCents Int          @map("amount_cents")
+  currency    CurrencyCode
+  status      OrderStatus  @default(pending_payment)
+
+  /// 续费订单指向被续费的服务
+  renewServiceId BigInt? @map("renew_service_id")
+
+  payChannel   String?   @map("pay_channel") @db.VarChar(32)
+  paidAt       DateTime? @map("paid_at")
+  expiresAt    DateTime? @map("expires_at") // 未付款订单的自动取消时间
+  failReason   String?   @map("fail_reason") @db.VarChar(500)
+  clientRemark String?   @map("client_remark") @db.VarChar(255)
+  adminRemark  String?   @map("admin_remark") @db.VarChar(255)
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  user      User           @relation(fields: [userId], references: [id])
+  plan      Plan           @relation(fields: [planId], references: [id])
+  planPrice PlanPrice      @relation(fields: [planPriceId], references: [id])
+  payments  Payment[]
+  service   Service?
+  jobs      ProvisionJob[]
+
+  @@index([userId, status])
+  @@index([status, createdAt])
+  @@map("orders")
+}
+
+model Payment {
+  id            BigInt        @id @default(autoincrement())
+  orderId       BigInt        @map("order_id")
+  paymentNo     String        @unique @map("payment_no") @db.VarChar(64)
+  channel       String        @db.VarChar(32)
+  wayCode       String?       @map("way_code") @db.VarChar(32)
+  amountCents   Int           @map("amount_cents")
+  currency      CurrencyCode
+  status        PaymentStatus @default(pending)
+  upstreamNo    String?       @map("upstream_no") @db.VarChar(64)
+  rawNotifyJson Json?         @map("raw_notify_json")
+  paidAt        DateTime?     @map("paid_at")
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+
+  order Order @relation(fields: [orderId], references: [id])
+
+  @@index([orderId])
+  @@map("payments")
+}
+
+// ---------- 交付后 ----------
+
+model Service {
+  id        BigInt @id @default(autoincrement())
+  serviceNo String @unique @map("service_no") @db.VarChar(64)
+  userId    BigInt @map("user_id")
+  orderId   BigInt @unique @map("order_id")
+  planId    BigInt @map("plan_id")
+
+  /// 建机成功后才有值；provisioning 阶段为空
+  machineId BigInt? @unique @map("machine_id")
+
+  status   ServiceStatus @default(provisioning)
+  startAt  DateTime?     @map("start_at")
+  expireAt DateTime      @map("expire_at")
+
+  /// 给用户看的交付信息 { ip, sshPort, username, password, osTemplate, region }
+  deliverPayloadJson Json? @map("deliver_payload_json")
+
+  /// 最近一次拉到的运行数据 { power, cpuPercent, memUsedMb, diskUsedGb, uptimeSec, netIn, netOut }
+  lastStatusJson Json?     @map("last_status_json")
+  lastCheckedAt  DateTime? @map("last_checked_at")
+
+  suspendReason String?  @map("suspend_reason") @db.VarChar(255)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  user    User            @relation(fields: [userId], references: [id])
+  order   Order           @relation(fields: [orderId], references: [id])
+  plan    Plan            @relation(fields: [planId], references: [id])
+  machine Machine?        @relation(fields: [machineId], references: [id])
+  actions ServiceAction[]
+  jobs    ProvisionJob[]
+
+  @@index([userId, status])
+  @@index([expireAt, status])
+  @@map("services")
+}
+
+model ServiceAction {
+  id           BigInt              @id @default(autoincrement())
+  serviceId    BigInt              @map("service_id")
+  actorType    String              @map("actor_type") @db.VarChar(16) // user | admin | system
+  actorId      BigInt?             @map("actor_id")
+  action       ServiceActionType
+  status       ServiceActionStatus @default(queued)
+  requestJson  Json?               @map("request_json")
+  resultJson   Json?               @map("result_json")
+  errorMessage String?             @map("error_message") @db.VarChar(500)
+  createdAt    DateTime            @default(now()) @map("created_at")
+  finishedAt   DateTime?           @map("finished_at")
+
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@index([serviceId, createdAt])
+  @@map("service_actions")
+}
+
+/// 异步建机 / 重装 / 销毁任务。云厂商建一台机要 30-90 秒，不能让用户干等，
+/// 所以订单付款成功只负责入队，真正的活在 BullMQ worker 里干，前端轮询这张表。
+model ProvisionJob {
+  id        BigInt    @id @default(autoincrement())
+  kind      JobKind
+  status    JobStatus @default(queued)
+  orderId   BigInt?   @map("order_id")
+  serviceId BigInt?   @map("service_id")
+  machineId BigInt?   @map("machine_id")
+
+  attempt     Int @default(0)
+  maxAttempts Int @default(3) @map("max_attempts")
+
+  /// 云厂商返回的长操作句柄，用来轮询进度
+  ///   gcp       { operationName, zone }
+  ///   lightsail { operationId }
+  upstreamOpJson Json? @map("upstream_op_json")
+
+  /// 进度百分比与当前步骤文字，直接给前端显示
+  progress Int     @default(0)
+  step     String? @db.VarChar(120)
+
+  payloadJson Json?     @map("payload_json")
+  resultJson  Json?     @map("result_json")
+  lastError   String?   @map("last_error") @db.VarChar(1000)
+  startedAt   DateTime? @map("started_at")
+  finishedAt  DateTime? @map("finished_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  order   Order?   @relation(fields: [orderId], references: [id])
+  service Service? @relation(fields: [serviceId], references: [id])
+  machine Machine? @relation(fields: [machineId], references: [id])
+
+  @@index([status, createdAt])
+  @@index([orderId])
+  @@map("provision_jobs")
+}
+
+// ---------- 支付通道 ----------
+
+model PayChannel {
+  id                   BigInt   @id @default(autoincrement())
+  code                 String   @unique @db.VarChar(48)
+  name                 String   @db.VarChar(120)
+  icon                 String?  @db.VarChar(32)
+  driver               String   @db.VarChar(24) // jeepay | tokenpay
+  wayCode              String?  @map("way_code") @db.VarChar(48)
+  settleCurrency       String?  @map("settle_currency") @db.VarChar(16)
+  gatewayUrl           String?  @map("gateway_url") @db.VarChar(255)
+  credentialsEncrypted String   @map("credentials_encrypted") @db.Text
+  rate                 Float?
+  usdToCnyRate         Float?   @map("usd_to_cny_rate")
+  isEnabled            Boolean  @default(true) @map("is_enabled")
+  sortOrder            Int      @default(0) @map("sort_order")
+  descText             String?  @map("desc_text") @db.VarChar(255)
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  @@map("pay_channels")
+}
+
+// ---------- 审计 ----------
+
+model OperationLog {
+  id         BigInt   @id @default(autoincrement())
+  actorType  String   @map("actor_type") @db.VarChar(16)
+  actorId    BigInt?  @map("actor_id")
+  action     String   @db.VarChar(64)
+  targetType String?  @map("target_type") @db.VarChar(32)
+  targetId   BigInt?  @map("target_id")
+  ip         String?  @db.VarChar(64)
+  metaJson   Json?    @map("meta_json")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [actorId], references: [id])
+
+  @@index([targetType, targetId])
+  @@index([createdAt])
+  @@map("operation_logs")
+}
