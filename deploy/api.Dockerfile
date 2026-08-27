@@ -1,10 +1,35 @@
-# 后端镜像。分两段构建：第一段装依赖和编译，第二段只留运行时需要的东西，
-# 这样最终镜像小很多，服务器磁盘吃得少。
+# 后端镜像。
+#
+# 分三段构建，为的是让最终镜像里只留运行时真正需要的东西：
+#   deps     只装生产依赖（不含 TypeScript、Jest、Nest CLI 这些）
+#   builder  装全部依赖并把 TypeScript 编译成 JavaScript
+#   最终     从 deps 拿 node_modules，从 builder 拿编译产物
+#
+# 少了 deps 这一段的话，最终镜像会把整个 monorepo 的 node_modules
+# （含前端的依赖和所有开发依赖）一起打进去，体积会到 1 GB 以上 ——
+# 对一台 20 GB 磁盘的小服务器来说太浪费了。
 
-FROM node:22-bookworm-slim AS builder
+# ---------- 生产依赖 ----------
+FROM node:22-bookworm-slim AS deps
 WORKDIR /app
 
 # openssl 是 Prisma 需要的
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY package.json package-lock.json* ./
+COPY apps/api/package.json ./apps/api/
+RUN npm ci --omit=dev --workspace apps/api --include-workspace-root \
+    || npm install --omit=dev --workspace apps/api --include-workspace-root
+
+# Prisma 客户端必须针对这份 node_modules 生成，不能从 builder 拷过来
+COPY apps/api/prisma ./apps/api/prisma
+RUN npx prisma generate --schema apps/api/prisma/schema.prisma
+
+# ---------- 编译 ----------
+FROM node:22-bookworm-slim AS builder
+WORKDIR /app
+
 RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -26,7 +51,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-cert
 
 ENV NODE_ENV=production
 
-COPY --from=builder /app/node_modules ./node_modules
+COPY --from=deps /app/node_modules ./node_modules
 COPY --from=builder /app/apps/api/dist ./apps/api/dist
 COPY --from=builder /app/apps/api/package.json ./apps/api/
 COPY --from=builder /app/apps/api/prisma ./apps/api/prisma
