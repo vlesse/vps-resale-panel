@@ -26,6 +26,14 @@ interface AdminPlan {
   diskGb: number;
   trafficGb: number | null;
   isEnabled: boolean;
+  sortOrder: number;
+  categoryKey: string | null;
+  categoryLabel: string | null;
+  categorySort: number;
+  isCustom: boolean;
+  customConfig: any;
+  description: string | null;
+  features: string[];
   soldCount: number;
   prices: { cycle: string; currency: string; priceCents: number }[];
   availability: { inStock: boolean; label: string; adminReason?: string };
@@ -37,6 +45,7 @@ export default function AdminPlans() {
   const [rows, setRows] = useState<AdminPlan[] | null>(null);
   const [flash, setFlash] = useState<{ tone: 'ok' | 'crit'; text: string } | null>(null);
   const [creating, setCreating] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [f, setF] = useState<any>({
     provider: 'gcp',
     fulfillment: 'on_demand',
@@ -59,10 +68,46 @@ export default function AdminPlans() {
   const cap = caps.find((c) => c.kind === f.provider);
   const usableAccounts = accounts.filter((a) => a.provider === f.provider && a.isEnabled);
 
-  const create = async () => {
+  /** 把当前这一行的值灌进表单，切到编辑模式 */
+  const startEdit = (p: AdminPlan) => {
+    const cny = p.prices.find((x) => x.currency === 'CNY' && x.cycle === 'monthly');
+    const usd = p.prices.find((x) => x.currency === 'USD' && x.cycle === 'monthly');
+    setF({
+      name: p.name,
+      slug: p.slug,
+      provider: p.provider,
+      fulfillment: p.fulfillment,
+      cloudAccountId: p.cloudAccount?.id ?? '',
+      regionLabel: p.regionLabel,
+      cpu: p.cpu,
+      memoryMb: p.memoryMb,
+      diskGb: p.diskGb,
+      trafficGb: p.trafficGb ?? '',
+      description: p.description ?? '',
+      features: (p.features ?? []).join('\n'),
+      priceCny: cny ? cny.priceCents / 100 : '',
+      priceUsd: usd ? usd.priceCents / 100 : '',
+      categoryKey: p.categoryKey ?? '',
+      categoryLabel: p.categoryLabel ?? '',
+      categorySort: p.categorySort ?? 0,
+      sortOrder: p.sortOrder ?? 0,
+      spec: p.providerSpec ?? {},
+    });
+    setEditingId(p.id);
+    setCreating(true);
+    if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const resetForm = () => {
+    setCreating(false);
+    setEditingId(null);
+    setF({ provider: 'gcp', fulfillment: 'on_demand', cpu: 2, memoryMb: 4096, diskGb: 80, priceCny: 45, priceUsd: 7, spec: {} });
+  };
+
+  const save = async () => {
     setFlash(null);
     try {
-      await api.post('/api/admin/plans', {
+      const body = {
         name: f.name,
         slug: f.slug,
         provider: f.provider,
@@ -80,9 +125,11 @@ export default function AdminPlans() {
           ...(f.priceCny ? [{ cycle: 'monthly', currency: 'CNY', priceCents: Math.round(f.priceCny * 100) }] : []),
           ...(f.priceUsd ? [{ cycle: 'monthly', currency: 'USD', priceCents: Math.round(f.priceUsd * 100) }] : []),
         ],
-      });
-      setFlash({ tone: 'ok', text: '套餐已创建' });
-      setCreating(false);
+      };
+      if (editingId) await api.patch(`/api/admin/plans/${editingId}`, body);
+      else await api.post('/api/admin/plans', body);
+      setFlash({ tone: 'ok', text: editingId ? '套餐已保存' : '套餐已创建' });
+      resetForm();
       await load();
     } catch (e: any) {
       setFlash({ tone: 'crit', text: e.message });
@@ -94,7 +141,10 @@ export default function AdminPlans() {
       <Unit>
         <PanelBar title="套餐" meta={rows ? `共 ${rows.length} 个` : undefined}>
           <div className="spacer" />
-          <button className="btn btn--sm btn--key" onClick={() => setCreating((v) => !v)}>
+          <button
+            className="btn btn--sm btn--key"
+            onClick={() => (creating ? resetForm() : setCreating(true))}
+          >
             {creating ? '收起' : '+ 新建套餐'}
           </button>
         </PanelBar>
@@ -107,7 +157,7 @@ export default function AdminPlans() {
 
       {creating && (
         <Unit>
-          <PanelBar title="新建套餐" />
+          <PanelBar title={editingId ? `编辑套餐 · ${f.name || ''}` : '新建套餐'} />
           <div className="panelbody">
             <div className="grid2">
               <div className="field">
@@ -122,6 +172,44 @@ export default function AdminPlans() {
                 <label className="label">机房显示名（用户看得到）</label>
                 <input className="input" value={f.regionLabel ?? ''} onChange={(e) => setF({ ...f, regionLabel: e.target.value })} placeholder="东京 · 亚洲东北" />
                 <span className="hint">这里不要写「谷歌云」，用户不需要知道你从哪进的货</span>
+              </div>
+              <div className="field">
+                <label className="label">选购页分栏（分类标识）</label>
+                <input
+                  className="input"
+                  value={f.categoryKey ?? ''}
+                  onChange={(e) => setF({ ...f, categoryKey: e.target.value })}
+                  placeholder="hk"
+                  spellCheck={false}
+                />
+                <span className="hint">同一个标识的套餐会归到一栏。留空的套餐归到「其它」，排在最后。</span>
+              </div>
+              <div className="field">
+                <label className="label">分栏显示名</label>
+                <input
+                  className="input"
+                  value={f.categoryLabel ?? ''}
+                  onChange={(e) => setF({ ...f, categoryLabel: e.target.value })}
+                  placeholder="香港 VPS"
+                />
+              </div>
+              <div className="field">
+                <label className="label">分栏排序（小的在前）</label>
+                <input
+                  className="input"
+                  type="number"
+                  value={f.categorySort ?? 0}
+                  onChange={(e) => setF({ ...f, categorySort: e.target.value })}
+                />
+              </div>
+              <div className="field">
+                <label className="label">栏内排序（小的在前）</label>
+                <input
+                  className="input"
+                  type="number"
+                  value={f.sortOrder ?? 0}
+                  onChange={(e) => setF({ ...f, sortOrder: e.target.value })}
+                />
               </div>
               <div className="field">
                 <label className="label">履约方式</label>
@@ -224,8 +312,10 @@ export default function AdminPlans() {
             </div>
 
             <div className="btnrow">
-              <button className="btn btn--key" onClick={create}>创建套餐</button>
-              <button className="btn" onClick={() => setCreating(false)}>取消</button>
+              <button className="btn btn--key" onClick={save}>
+                {editingId ? '保存修改' : '创建套餐'}
+              </button>
+              <button className="btn" onClick={resetForm}>取消</button>
             </div>
           </div>
         </Unit>
@@ -264,6 +354,9 @@ export default function AdminPlans() {
             )}
 
             <div className="btnrow" style={{ marginTop: 14 }}>
+              <button className="btn btn--sm btn--key" onClick={() => startEdit(p)}>
+                修改
+              </button>
               <button
                 className="btn btn--sm"
                 onClick={async () => {

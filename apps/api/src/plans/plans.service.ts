@@ -252,6 +252,11 @@ export class PlansService {
         capacityLimit: p.capacityLimit,
         isEnabled: p.isEnabled,
         sortOrder: p.sortOrder,
+        categoryKey: p.categoryKey,
+        categoryLabel: p.categoryLabel,
+        categorySort: p.categorySort,
+        isCustom: p.isCustom,
+        customConfig: p.customConfigJson,
         prices: p.prices.map((pr) => ({
           id: pr.id.toString(),
           cycle: pr.cycle,
