@@ -67,9 +67,9 @@ export default function AdminUsers() {
                   <th>昵称</th>
                   <th>角色</th>
                   <th>状态</th>
-                  <th className="num">订单</th>
-                  <th className="num">机器</th>
-                  <th className="num">机器上限</th>
+                  <th className="num r">订单</th>
+                  <th className="num r">机器</th>
+                  <th className="num r">机器上限</th>
                   <th>最近登录</th>
                   <th>操作</th>
                 </tr>
@@ -89,9 +89,9 @@ export default function AdminUsers() {
                         {u.status === 'active' ? '正常' : '已停用'}
                       </span>
                     </td>
-                    <td className="num">{u.orderCount}</td>
-                    <td className="num">{u.serviceCount}</td>
-                    <td className="num">{u.maxActiveServices || '默认'}</td>
+                    <td className="num r">{u.orderCount}</td>
+                    <td className="num r">{u.serviceCount}</td>
+                    <td className="num r">{u.maxActiveServices || '默认'}</td>
                     <td className="num" style={{ fontSize: 11.5 }}>{formatDate(u.lastLoginAt)}</td>
                     <td>
                       <div className="btnrow">

@@ -186,6 +186,8 @@ export interface ServiceDetail extends ServiceItem {
     region?: string;
   } | null;
   liveStatus: LiveStatus | null;
+  /** 实时探测失败时的原因。读数会退回上一次采集到的值，页面照常能用。 */
+  statusError: string | null;
   lastCheckedAt: string | null;
   /** 没有绑定机器时是 null —— 别当成「一台什么都不支持的机器」 */
   capabilities: { canPowerOn: boolean; canRebuild: boolean; hasMetrics: boolean } | null;

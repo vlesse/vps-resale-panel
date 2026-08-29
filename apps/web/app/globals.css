@@ -793,8 +793,12 @@ h1.title {
   border-bottom: 1px solid var(--hairline-2);
   white-space: nowrap;
 }
-.table th.num,
-.table td.num {
+/* .num 只管字体（等宽 + 数位对齐），不管对齐方式 ——
+   它被大量用在机器编号、IP、错误信息这类不是数字的等宽内容上，
+   一并右对齐会让表头和单元格分家。真要右对齐的列用 .r，表头和
+   单元格都要加，这样不会只对齐一半。 */
+.table th.r,
+.table td.r {
   text-align: right;
 }
 .table td {
@@ -1059,10 +1063,17 @@ h1.title {
 
 /* ---- 你买到的是什么 ---- */
 
+/* 固定两列。用 auto-fit 会在宽屏上排成三列，
+   而这里正好是四条，第四条会孤零零掉到第二行。 */
 .caps {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0 48px;
+}
+@media (max-width: 760px) {
+  .caps {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 .cap {
   display: grid;

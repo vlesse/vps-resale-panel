@@ -175,7 +175,7 @@ export default function AdminHome() {
                     <th>订单号</th>
                     <th>用户</th>
                     <th>机型</th>
-                    <th className="num">金额</th>
+                    <th className="num r">金额</th>
                     <th>状态</th>
                     <th>开通进度</th>
                   </tr>
@@ -186,7 +186,7 @@ export default function AdminHome() {
                       <td className="num" style={{ fontSize: 11.5 }}>{o.orderNo}</td>
                       <td style={{ fontSize: 12 }}>{o.user.email}</td>
                       <td>{o.planName}</td>
-                      <td className="num">{money(o.amountCents, o.currency)}</td>
+                      <td className="num r">{money(o.amountCents, o.currency)}</td>
                       <td>
                         <span
                           className="badge"

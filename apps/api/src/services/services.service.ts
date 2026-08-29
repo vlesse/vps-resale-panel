@@ -100,8 +100,18 @@ export class ServicesService {
       : null;
 
     let status: unknown = service.lastStatusJson;
+    let statusError: string | null = null;
     if (refresh && service.machine) {
-      status = await this.refreshStatus(service.id);
+      try {
+        status = await this.refreshStatus(service.id);
+      } catch (e) {
+        // 实时探测失败绝不能让整个控制台打不开。机器只要网络抖一下、
+        // 或者云厂商那边慢一拍，用户看到的就会是一个 500 —— 他连自己的
+        // IP、到期时间、操作按钮都看不到，只会以为机器没了。
+        // 这里退回上一次拿到的读数，并把失败原因带给前端说明。
+        statusError = e instanceof Error ? e.message : '状态获取失败';
+        this.logger.warn(`服务 ${service.serviceNo} 实时状态获取失败：${statusError}`);
+      }
     }
 
     const actions = await this.prisma.serviceAction.findMany({
@@ -120,6 +130,7 @@ export class ServicesService {
       ...this.toListItem(service),
       deliver: this.deliverFor(actor, service),
       liveStatus: status,
+      statusError,
       lastCheckedAt: service.lastCheckedAt,
       capabilities: caps,
       job: job

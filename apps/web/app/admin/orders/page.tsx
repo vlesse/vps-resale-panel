@@ -104,7 +104,7 @@ export default function AdminOrders() {
                   <th>订单号</th>
                   <th>用户</th>
                   <th>机型</th>
-                  <th className="num">金额</th>
+                  <th className="num r">金额</th>
                   <th>状态</th>
                   <th>开通进度</th>
                   <th>时间</th>
@@ -120,7 +120,7 @@ export default function AdminOrders() {
                       {o.planName}
                       {o.kind === 'renew' && <span className="badge" style={{ marginLeft: 6 }}>续费</span>}
                     </td>
-                    <td className="num">{money(o.amountCents, o.currency)}</td>
+                    <td className="num r">{money(o.amountCents, o.currency)}</td>
                     <td>
                       <span className="badge" data-tone={TONE[o.status] ?? 'mute'}>{o.statusLabel}</span>
                     </td>

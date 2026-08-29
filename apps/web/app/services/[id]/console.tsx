@@ -319,6 +319,11 @@ export function Console({ id }: { id: string }) {
             </button>
             <span className="silk" style={{ fontSize: 9.5 }}>
               上次采集 {formatDate(svc.lastCheckedAt)}
+              {svc.statusError && (
+                <span style={{ color: 'var(--warn)', marginLeft: 10 }}>
+                  · 这次没连上（{svc.statusError}），下面是上次的读数
+                </span>
+              )}
             </span>
           </div>
         </div>

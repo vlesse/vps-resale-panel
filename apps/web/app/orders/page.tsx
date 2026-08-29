@@ -59,7 +59,7 @@ export default function Orders() {
                     <th>订单号</th>
                     <th>机型</th>
                     <th>周期</th>
-                    <th className="num">金额</th>
+                    <th className="num r">金额</th>
                     <th>状态</th>
                     <th>下单时间</th>
                     <th></th>
@@ -74,7 +74,7 @@ export default function Orders() {
                         {o.kind === 'renew' && <span className="badge" style={{ marginLeft: 6 }}>续费</span>}
                       </td>
                       <td>{o.cycleLabel}</td>
-                      <td className="num">{money(o.amountCents, o.currency)}</td>
+                      <td className="num r">{money(o.amountCents, o.currency)}</td>
                       <td>
                         <span className="badge" data-tone={TONE[o.status] ?? 'mute'}>{o.statusLabel}</span>
                       </td>

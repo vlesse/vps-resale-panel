@@ -221,11 +221,11 @@ export default function Home() {
               <thead>
                 <tr>
                   <th>机型</th>
-                  <th className="num">vCPU</th>
-                  <th className="num">内存</th>
-                  <th className="num">硬盘</th>
-                  <th className="num">月流量</th>
-                  <th className="num">价格</th>
+                  <th className="num r">vCPU</th>
+                  <th className="num r">内存</th>
+                  <th className="num r">硬盘</th>
+                  <th className="num r">月流量</th>
+                  <th className="num r">价格</th>
                   <th />
                 </tr>
               </thead>
@@ -240,15 +240,15 @@ export default function Home() {
                         <div className="plan-name">{p.name}</div>
                         <div className="plan-region">{p.regionLabel}</div>
                       </td>
-                      <td className="num data">{p.cpu}</td>
-                      <td className="num data">{gb(p.memoryMb)}</td>
-                      <td className="num data">{p.diskGb} GB</td>
-                      <td className="num data">{traffic(p.trafficGb)}</td>
-                      <td className="num">
+                      <td className="num data r">{p.cpu}</td>
+                      <td className="num data r">{gb(p.memoryMb)}</td>
+                      <td className="num data r">{p.diskGb} GB</td>
+                      <td className="num data r">{traffic(p.trafficGb)}</td>
+                      <td className="num r">
                         <span className="plan-price">{price ? money(price.priceCents, currency) : '—'}</span>
                         <span className="plan-cyc"> /月</span>
                       </td>
-                      <td className="num" style={{ whiteSpace: 'nowrap' }}>
+                      <td className="num r" style={{ whiteSpace: 'nowrap' }}>
                         <button
                           type="button"
                           className="btn btn--sm btn--key"
