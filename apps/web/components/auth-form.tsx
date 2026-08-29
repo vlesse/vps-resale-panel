@@ -69,8 +69,8 @@ export function AuthForm({ mode }: { mode: 'login' | 'register' }) {
   };
 
   return (
-    <Unit>
-      <div className="panelbody" style={{ maxWidth: 460, margin: '0 auto', padding: '28px 20px' }}>
+    <Unit className="unit--narrow">
+      <div className="panelbody" style={{ padding: '32px 30px' }}>
         <h1 className="title" style={{ fontSize: 22, marginBottom: 4 }}>
           {mode === 'login' ? '登录' : '注册'}
         </h1>
