@@ -1,14 +1,31 @@
 import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
-import { IsEnum, IsOptional, IsString, Length } from 'class-validator';
+import {
+  IsEnum,
+  IsInt,
+  IsOptional,
+  IsString,
+  Length,
+  Min,
+  ValidateNested,
+} from 'class-validator';
+import { Type } from 'class-transformer';
 import { BillingCycle, CurrencyCode, OrderStatus } from '@prisma/client';
 import { OrdersService } from './orders.service';
 import { AdminGuard, AuthedUser, CurrentUser } from '../auth/auth.decorators';
+
+class CustomSpecDto {
+  @IsInt() @Min(1) cpu: number;
+  @IsInt() @Min(256) memoryMb: number;
+  @IsInt() @Min(1) diskGb: number;
+}
 
 class CreateOrderDto {
   @IsString() planId: string;
   @IsOptional() @IsEnum(BillingCycle) cycle?: BillingCycle;
   @IsEnum(CurrencyCode) currency: CurrencyCode;
   @IsOptional() @IsString() @Length(0, 255) remark?: string;
+  /** 自定义档才有。这里只做类型和下限校验，真正的范围和价格由服务端按套餐配置重算。 */
+  @IsOptional() @ValidateNested() @Type(() => CustomSpecDto) customSpec?: CustomSpecDto;
 }
 
 class RenewDto {

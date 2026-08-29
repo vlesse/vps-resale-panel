@@ -226,6 +226,25 @@ model Plan {
   description    String? @db.Text
   featuresJson   Json?   @map("features_json")
 
+  /// 选购页的分栏。同一个 categoryKey 的套餐归到一栏，比如 hk / tw / kr / us。
+  /// 留空的套餐会归到「其它」一栏，所以老数据不会丢。
+  categoryKey   String? @map("category_key") @db.VarChar(32)
+  categoryLabel String? @map("category_label") @db.VarChar(64)
+  categorySort  Int     @default(0) @map("category_sort")
+
+  /// 自定义档：不是一个固定规格，而是让用户自己选核心 / 内存 / 硬盘，价格按公式算。
+  /// isCustom=true 时 cpu / memoryMb / diskGb 三个字段存的是「默认选中值」。
+  /// customConfigJson 的形状：
+  ///   {
+  ///     cpuOptions: [2,4,8],
+  ///     memoryPerCpu: { minGb: 1, maxGb: 8, stepGb: 1 },
+  ///     disk: { minGb: 20, maxGb: 500, stepGb: 10 },
+  ///     machineFamily: "e2",
+  ///     price: { CNY: { baseCents, perCpuCents, perGbRamCents, perGbDiskCents }, USD: {...} }
+  ///   }
+  isCustom         Boolean @default(false) @map("is_custom")
+  customConfigJson Json?   @map("custom_config_json")
+
   /// 该套餐最多卖出多少台在跑的机器，卖满即显示无货。0 = 不限。
   capacityLimit Int @default(0) @map("capacity_limit")
 
@@ -337,6 +356,11 @@ model Order {
 
   /// 续费订单指向被续费的服务
   renewServiceId BigInt? @map("renew_service_id")
+
+  /// 自定义档下单时用户选的规格 { cpu, memoryMb, diskGb }。
+  /// 固定套餐为空。建机时它会覆盖套餐里的 machineType 和 diskGb ——
+  /// 必须落库，否则重装的时候就不知道该按什么规格重建了。
+  customSpecJson Json? @map("custom_spec_json")
 
   payChannel   String?   @map("pay_channel") @db.VarChar(32)
   paidAt       DateTime? @map("paid_at")

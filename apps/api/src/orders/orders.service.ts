@@ -41,7 +41,14 @@ export class OrdersService {
 
   async create(
     user: AuthedUser,
-    dto: { planId: string; cycle?: BillingCycle; currency: CurrencyCode; remark?: string },
+    dto: {
+      planId: string;
+      cycle?: BillingCycle;
+      currency: CurrencyCode;
+      remark?: string;
+      /** 自定义档才有：用户选的 { cpu, memoryMb, diskGb } */
+      customSpec?: { cpu: number; memoryMb: number; diskGb: number };
+    },
   ) {
     const plan = await this.prisma.plan.findUnique({
       where: { id: BigInt(dto.planId) },
@@ -62,6 +69,17 @@ export class OrdersService {
       );
     }
 
+    // 自定义档：规格和价格都在服务端重算一遍。
+    // 前端传上来的金额一律不信 —— 改个数字就能一块钱买十六核，
+    // 而这一单会在你的云账号上真建出一台机器。
+    let amountCents = price.priceCents;
+    let customSpec: { cpu: number; memoryMb: number; diskGb: number } | null = null;
+    if (plan.isCustom) {
+      const r = this.plans.computeCustomPrice(plan.customConfigJson, dto.customSpec, dto.currency);
+      customSpec = r.spec;
+      amountCents = r.priceCents;
+    }
+
     // 1. 有没有货
     const availability = await this.plans.availability(plan);
     if (!availability.inStock) {
@@ -78,6 +96,8 @@ export class OrdersService {
         planId: plan.id,
         status: OrderStatus.pending_payment,
         expiresAt: { gt: new Date() },
+        // 自定义档下两次可能选的是完全不同的规格，只有一模一样才算「同一单」
+        ...(plan.isCustom ? { amountCents } : {}),
       },
     });
     if (pending) {
@@ -97,8 +117,9 @@ export class OrdersService {
         planId: plan.id,
         planPriceId: price.id,
         cycle,
-        amountCents: price.priceCents,
+        amountCents,
         currency: price.currency,
+        customSpecJson: customSpec ?? undefined,
         clientRemark: dto.remark?.slice(0, 255),
         expiresAt: new Date(Date.now() + minutes * 60000),
       },
@@ -121,7 +142,11 @@ export class OrdersService {
   ) {
     const service = await this.prisma.service.findUnique({
       where: { id: serviceId },
-      include: { plan: { include: { prices: true } } },
+      include: {
+        plan: { include: { prices: true } },
+        // 续费要照着当初那一单的金额和规格来，所以得把原订单带出来
+        order: { select: { amountCents: true, customSpecJson: true } },
+      },
     });
     if (!service) throw new NotFoundException('服务不存在');
     if (user.role !== UserRole.admin && service.userId !== user.id) {
@@ -157,7 +182,9 @@ export class OrdersService {
         planId: service.planId,
         planPriceId: price.id,
         cycle,
-        amountCents: price.priceCents,
+        // 续费按这台机器当初买的规格算钱，而不是套餐的基准价 ——
+        // 自定义档买的是 8 核，续费当然不能按 2 核收。
+        amountCents: service.order?.amountCents ?? price.priceCents,
         currency: price.currency,
         renewServiceId: serviceId,
         expiresAt: new Date(Date.now() + minutes * 60000),

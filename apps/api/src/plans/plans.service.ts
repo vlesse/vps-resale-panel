@@ -10,6 +10,14 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProviderRegistry } from '../providers/provider.registry';
+import {
+  defaultCustomSpec,
+  memoryRangeFor,
+  normalizeCustomSpec,
+  parseCustomConfig,
+  priceCustom,
+  type CustomConfig,
+} from './custom-spec';
 
 /** 前台商品卡上那个角标要显示什么 */
 export interface Availability {
@@ -83,7 +91,39 @@ export class PlansService {
       // 控制台上该显示哪些按钮
       capabilities: { canPowerOn: caps.canPowerOn, canRebuild: caps.canRebuild },
       sortOrder: plan.sortOrder,
+      // 选购页按这个分栏。没填分类的老套餐归到「其它」，不会消失。
+      categoryKey: plan.categoryKey ?? 'other',
+      categoryLabel: plan.categoryLabel ?? '其它',
+      categorySort: plan.categorySort ?? 999,
+      isCustom: plan.isCustom,
+      // 自定义档：把可选范围和价格系数一起给前端，让它能实时算价。
+      // 这些系数就是卖价，不是你的成本，可以放心暴露。
+      custom: plan.isCustom ? this.publicCustom(plan.customConfigJson) : null,
     };
+  }
+
+  /** 自定义档给前端的可选范围。每个核心数下内存范围不同，直接算好省得前端再实现一遍规则。 */
+  private publicCustom(json: unknown) {
+    let cfg: CustomConfig;
+    try {
+      cfg = parseCustomConfig(json);
+    } catch {
+      return null;
+    }
+    return {
+      machineFamily: cfg.machineFamily,
+      disk: cfg.disk,
+      price: cfg.price,
+      defaults: defaultCustomSpec(cfg),
+      cpuOptions: cfg.cpuOptions.map((cpu) => ({ cpu, memory: memoryRangeFor(cfg, cpu) })),
+    };
+  }
+
+  /** 按用户选的规格算价。服务端也要算一遍，不能信前端报上来的金额。 */
+  computeCustomPrice(planCustomJson: unknown, spec: unknown, currency: string) {
+    const cfg = parseCustomConfig(planCustomJson);
+    const normalized = normalizeCustomSpec(cfg, spec);
+    return { cfg, spec: normalized, priceCents: priceCustom(cfg, normalized, currency) };
   }
 
   /**
@@ -305,6 +345,11 @@ export class PlansService {
       ...(dto.osTemplate !== undefined ? { osTemplate: dto.osTemplate } : {}),
       ...(dto.description !== undefined ? { description: dto.description } : {}),
       ...(dto.features !== undefined ? { featuresJson: dto.features } : {}),
+      ...(dto.categoryKey !== undefined ? { categoryKey: dto.categoryKey || null } : {}),
+      ...(dto.categoryLabel !== undefined ? { categoryLabel: dto.categoryLabel || null } : {}),
+      ...(dto.categorySort !== undefined ? { categorySort: dto.categorySort } : {}),
+      ...(dto.isCustom !== undefined ? { isCustom: dto.isCustom } : {}),
+      ...(dto.customConfig !== undefined ? { customConfigJson: dto.customConfig } : {}),
       ...(dto.capacityLimit !== undefined ? { capacityLimit: dto.capacityLimit } : {}),
       ...(dto.isEnabled !== undefined ? { isEnabled: dto.isEnabled } : {}),
       ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
@@ -324,6 +369,18 @@ export class PlansService {
    */
   private async validate(dto: PlanInput, selfId: bigint | null): Promise<void> {
     if (!dto.name?.trim()) throw new BadRequestException('套餐名不能为空');
+    if (dto.isCustom) {
+      // 配错了不能等到用户下单才发现，那时候他已经在付款页了
+      const cfg = parseCustomConfig(dto.customConfig);
+      if (cfg.cpuOptions.some((n) => n % 2 !== 0 || n < 2)) {
+        throw new BadRequestException(
+          '谷歌云的自定义机型只接受 2 以上的偶数核（2 / 4 / 8 …），奇数核会被云厂商拒绝',
+        );
+      }
+      if (!Object.keys(cfg.price || {}).length) {
+        throw new BadRequestException('自定义套餐至少要配一个币种的价格系数');
+      }
+    }
     if (!dto.slug?.trim()) throw new BadRequestException('套餐标识（slug）不能为空');
 
     const dup = await this.prisma.plan.findUnique({ where: { slug: dto.slug.trim().toLowerCase() } });
@@ -421,6 +478,11 @@ export interface PlanInput {
   osTemplate?: string;
   description?: string;
   features?: string[];
+  categoryKey?: string | null;
+  categoryLabel?: string | null;
+  categorySort?: number;
+  isCustom?: boolean;
+  customConfig?: Record<string, any> | null;
   capacityLimit?: number;
   isEnabled?: boolean;
   sortOrder?: number;

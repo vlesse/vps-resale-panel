@@ -13,6 +13,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ProviderRegistry } from '../providers/provider.registry';
 import { ProvisionRequest, ProvisionResult } from '../providers/provider.types';
 import {
+  customMachineType,
+  normalizeCustomSpec,
+  parseCustomConfig,
+} from '../plans/custom-spec';
+import {
   encryptJson,
   generateCode,
   generatePassword,
@@ -217,7 +222,10 @@ export class ProvisioningService {
     let machine =
       plan.fulfillment === 'inventory'
         ? await this.allocateFromPool(plan.id, plan.matchRulesJson)
-        : await this.createMachineRow(plan);
+        : await this.createMachineRow(
+            plan,
+            order.customSpecJson as { cpu: number; memoryMb: number; diskGb: number } | null,
+          );
 
     await this.prisma.provisionJob.update({
       where: { id: jobId },
@@ -232,7 +240,7 @@ export class ProvisioningService {
 
     const req: ProvisionRequest = {
       code: machine.code,
-      spec: (plan.providerSpecJson ?? {}) as Record<string, any>,
+      spec: this.effectiveSpec(plan, order.customSpecJson),
       hostname: machine.code.toLowerCase(),
       password,
       publicKeyOpenssh: keypair.publicKeyOpenssh,
@@ -308,7 +316,15 @@ export class ProvisioningService {
     const job = await this.prisma.provisionJob.findUniqueOrThrow({
       where: { id: jobId },
       include: {
-        service: { include: { plan: { include: { cloudAccount: true } }, machine: true } },
+        service: {
+          include: {
+            plan: { include: { cloudAccount: true } },
+            machine: true,
+            // 重装要按当初买的规格重建。不带上原订单的话，自定义档
+            // 重装一次配置就掉回套餐默认值 —— 用户 8 核变 2 核。
+            order: { select: { customSpecJson: true } },
+          },
+        },
       },
     });
     const service = job.service;
@@ -338,7 +354,7 @@ export class ProvisioningService {
 
     const result = await driver.rebuild(ctx, {
       code: machine.code,
-      spec: (plan.providerSpecJson ?? {}) as Record<string, any>,
+      spec: this.effectiveSpec(plan, service.order?.customSpecJson ?? null),
       hostname: machine.code.toLowerCase(),
       password,
       publicKeyOpenssh: keypair.publicKeyOpenssh,
@@ -520,6 +536,27 @@ export class ProvisioningService {
   }
 
   /** 按需模式：先写一行 provisioning 状态的机器，建机成功后再补上 IP 和凭据 */
+  /**
+   * 真正下发给驱动的建机参数。
+   *
+   * 自定义档下，套餐里的 machineType 和 diskGb 只是默认值，
+   * 用户实际选的存在订单上 —— 必须以订单为准，否则他花 8 核的钱拿到 2 核。
+   * 重装走的也是这里，所以重装出来的规格和当初买的一致。
+   */
+  private effectiveSpec(
+    plan: { providerSpecJson: Prisma.JsonValue; isCustom?: boolean; customConfigJson?: Prisma.JsonValue },
+    customSpecJson: Prisma.JsonValue,
+  ): Record<string, any> {
+    const spec = { ...((plan.providerSpecJson ?? {}) as Record<string, any>) };
+    if (!plan.isCustom || !customSpecJson) return spec;
+
+    const cfg = parseCustomConfig(plan.customConfigJson);
+    const chosen = normalizeCustomSpec(cfg, customSpecJson);
+    spec.machineType = customMachineType(cfg, chosen);
+    spec.diskGb = chosen.diskGb;
+    return spec;
+  }
+
   private async createMachineRow(plan: {
     id: bigint;
     provider: any;
@@ -530,7 +567,7 @@ export class ProvisioningService {
     diskGb: number;
     osTemplate: string | null;
     providerSpecJson: Prisma.JsonValue;
-  }) {
+  }, bought?: { cpu: number; memoryMb: number; diskGb: number } | null) {
     const spec = (plan.providerSpecJson ?? {}) as any;
     return this.prisma.machine.create({
       data: {
@@ -539,9 +576,9 @@ export class ProvisioningService {
         cloudAccountId: plan.cloudAccountId,
         planId: plan.id,
         region: spec.zone ?? spec.availabilityZone ?? plan.regionLabel,
-        cpu: plan.cpu,
-        memoryMb: plan.memoryMb,
-        diskGb: plan.diskGb,
+        cpu: bought?.cpu ?? plan.cpu,
+        memoryMb: bought?.memoryMb ?? plan.memoryMb,
+        diskGb: bought?.diskGb ?? plan.diskGb,
         osTemplate: plan.osTemplate,
         status: MachineStatus.provisioning,
       },
