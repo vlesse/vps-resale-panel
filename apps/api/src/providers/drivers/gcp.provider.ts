@@ -115,18 +115,25 @@ export class GcpProvider implements VpsProvider {
       const opts = this.clientOptions(credentials);
       // 列机型是只读操作，权限要求最低，用来验「凭据对不对 + 项目存不存在」正合适
       const client = new MachineTypesClient(opts);
-      const [list] = await client.list({
-        project: credentials.projectId,
-        zone: 'us-central1-a',
-        maxResults: 1,
-      });
+      // maxResults 是**每页条数**，不是总数上限；而 list() 默认会自动翻完所有页。
+      // 写 maxResults: 1 的效果是「每页 1 条，把一个可用区里 180 多个机型
+      // 一页一页全取回来」—— 180 多次串行往返，两分钟都跑不完，界面上就是
+      // 永远转圈且永不报错。autoPaginate: false 才是「只要第一页」。
+      const [list] = await client.list(
+        {
+          project: credentials.projectId,
+          zone: 'us-central1-a',
+          maxResults: 5,
+        },
+        { autoPaginate: false, timeout: 20_000 },
+      );
       return {
         ok: true,
         message: '连接成功',
         detail: {
           项目: credentials.projectId,
           服务账号: credentials.serviceAccountKey.client_email,
-          探测机型数: list.length,
+          探测到的机型: (list ?? []).slice(0, 3).map((m: any) => m.name).join(', ') || '（该可用区没有机型）',
         },
       };
     } catch (err: any) {
