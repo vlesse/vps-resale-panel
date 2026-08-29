@@ -116,11 +116,11 @@ vps-resale-panel/
 │   │       └── auth/ captcha/    登录注册
 │   └── web/                      前端
 │       ├── app/                  页面
-│       ├── components/rack.tsx   机架视觉组件
+│       ├── components/ui.tsx     视觉基础件
 │       └── lib/api.ts            接口客户端
 ├── deploy/                       Dockerfile 和 Caddy 配置
 ├── docs/                         ★ 从零搭建教程
-├── design/rack-prototype.html    视觉原型
+├── design/                       视觉原型（clean 是现用的藕荷方案）
 └── docker-compose.yml            一条命令启动全站
 ```
 
