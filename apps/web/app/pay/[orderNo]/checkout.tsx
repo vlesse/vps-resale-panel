@@ -12,7 +12,7 @@ import {
   type PayChannel,
   type PaymentStatus,
 } from '@/lib/api';
-import { Notice, PanelBar, Unit } from '@/components/rack';
+import { Notice, PanelBar, Unit } from '@/components/ui';
 
 interface OrderDetail extends OrderItem {
   plan?: { name: string; regionLabel: string; cpu: number; memoryMb: number; diskGb: number };
@@ -130,18 +130,18 @@ export function Checkout({ orderNo }: { orderNo: string }) {
   return (
     <>
       <Unit>
-        <PanelBar slot="U01" title="结算" meta={`订单 ${order.orderNo}`} />
+        <PanelBar title="结算" meta={`订单 ${order.orderNo}`} />
         <div className="panelbody">
           <div className="well">
             <div className="readout">
               <div>
                 <div className="ro-k">机型</div>
-                <div style={{ color: 'var(--etch)', fontSize: 15 }}>{order.planName}</div>
+                <div style={{ color: 'var(--ink)', fontSize: 15 }}>{order.planName}</div>
                 <div className="silk" style={{ fontSize: 10, marginTop: 3 }}>{order.regionLabel}</div>
               </div>
               <div>
                 <div className="ro-k">计费周期</div>
-                <div style={{ color: 'var(--etch)', fontSize: 15 }}>{order.cycleLabel}</div>
+                <div style={{ color: 'var(--ink)', fontSize: 15 }}>{order.cycleLabel}</div>
               </div>
               <div>
                 <div className="ro-k">应付金额</div>
@@ -175,7 +175,7 @@ export function Checkout({ orderNo }: { orderNo: string }) {
           <div className="panelbody">
             <div className="row" style={{ justifyContent: 'space-between' }}>
               <span className="title" style={{ fontSize: 16 }}>付款已到账，正在开通机器</span>
-              <span className="data" style={{ color: 'var(--amber)' }}>{status?.progress ?? 0}%</span>
+              <span className="data" style={{ color: 'var(--accent)' }}>{status?.progress ?? 0}%</span>
             </div>
             <div className="bar" style={{ marginTop: 10, height: 12 }}>
               <span className="bar-fill" style={{ width: `${status?.progress ?? 0}%` }} />
@@ -225,7 +225,7 @@ export function Checkout({ orderNo }: { orderNo: string }) {
       {/* 选支付方式 */}
       {!paid && left !== 0 && (
         <Unit>
-          <PanelBar slot="U02" title="选择支付方式" />
+          <PanelBar title="选择支付方式" />
           <div className="panelbody">
             {channels.length === 0 ? (
               <Notice tone="warn">
@@ -244,11 +244,11 @@ export function Checkout({ orderNo }: { orderNo: string }) {
                         textAlign: 'left',
                         cursor: 'pointer',
                         border: 0,
-                        outline: picked === c.code ? '1px solid var(--amber)' : 'none',
+                        outline: picked === c.code ? '1px solid var(--accent)' : 'none',
                         outlineOffset: 1,
                       }}
                     >
-                      <div style={{ color: 'var(--etch)', fontSize: 15 }}>{c.name}</div>
+                      <div style={{ color: 'var(--ink)', fontSize: 15 }}>{c.name}</div>
                       {c.desc && <div className="hint" style={{ marginTop: 4 }}>{c.desc}</div>}
                       {c.settleCurrency && (
                         <div className="silk" style={{ fontSize: 9.5, marginTop: 6 }}>

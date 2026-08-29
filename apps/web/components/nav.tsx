@@ -4,10 +4,10 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { api, getToken, setToken, type Me } from '@/lib/api';
-import { Unit, Vent } from './rack';
+
 
 /**
- * 顶部铭牌。
+ * 顶栏。
  *
  * 登录状态在客户端判断（令牌在 localStorage），所以首屏会有一瞬间
  * 不知道用户是谁。这里用一个占位宽度顶住，避免导航条抖一下。
@@ -50,12 +50,10 @@ export function Nav() {
   );
 
   return (
-    <Unit>
-      <div className="navbar">
-        <Link href="/" style={{ textDecoration: 'none' }}>
-          <span className="brand-mark">
-            RENREN<em>YINGS</em>
-          </span>
+    <div className="navbar">
+        <Link href="/" className="brand-mark">
+          <em aria-hidden="true" />
+          RENRENYINGS
         </Link>
 
         <nav className="navlinks">
@@ -65,7 +63,7 @@ export function Nav() {
           {me?.role === 'admin' && link('/admin', '后台')}
         </nav>
 
-        <Vent />
+        <span className="spacer" />
 
         <div className="navlinks" style={{ minWidth: loaded ? undefined : 120 }}>
           {!loaded ? null : me ? (
@@ -85,8 +83,7 @@ export function Nav() {
               </Link>
             </>
           )}
-        </div>
       </div>
-    </Unit>
+    </div>
   );
 }

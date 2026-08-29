@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { api, getToken, type Me } from '@/lib/api';
-import { Notice, PanelBar, Unit } from '@/components/rack';
+import { Notice, PanelBar, Unit } from '@/components/ui';
 
 const TABS = [
   ['/admin', '总览'],
@@ -46,7 +46,7 @@ export function AdminNav() {
 
   return (
     <Unit>
-      <PanelBar slot="ADM" title="管理后台">
+      <PanelBar title="管理后台">
         <div className="spacer" />
         <nav className="navlinks">
           {TABS.map(([href, label]) => (

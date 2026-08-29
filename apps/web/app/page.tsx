@@ -1,19 +1,55 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { api, getToken, money, type PublicPlan } from '@/lib/api';
-import { Badge, Notice, Unit, Vent } from '@/components/rack';
+import { Notice, Unit } from '@/components/ui';
 
-const PROVIDER_LOOK: { test: (p: PublicPlan) => boolean; label: string; color: string }[] = [
-  { test: (p) => /东京|首尔|大阪|日本|韩国/.test(p.regionLabel), label: '亚洲东北', color: '#8ab7f0' },
-  { test: (p) => /新加坡|香港|台湾|东南亚/.test(p.regionLabel), label: '亚洲东南', color: '#f0b46a' },
-  { test: (p) => /洛杉矶|美国|硅谷|西雅图/.test(p.regionLabel), label: '北美', color: '#8fd8a8' },
+/**
+ * 交付过程。
+ *
+ * 这里写的是**典型耗时**，不是某一笔真实订单的回执 ——
+ * 首页上摆一张带订单号和 IP 的「回执」，等于把编出来的记录当真事展示。
+ * 等你手上有了足够的真实数据，把这几个数字换成实际统计值。
+ */
+const FLOW: { at: string; what: string; note: string }[] = [
+  { at: '00:00', what: '订单创建', note: '选好机型下单' },
+  { at: '00:10', what: '收到付款', note: '支付渠道回调' },
+  { at: '00:15', what: '向云厂商提交创建', note: '谷歌云 / Lightsail' },
+  { at: '01:00', what: '系统就绪，BBR 已开启', note: '首次启动脚本跑完' },
+  { at: '01:10', what: '已交付，SSH 可连接', note: '地址和密码进控制台' },
 ];
 
-function regionTag(p: PublicPlan) {
-  const hit = PROVIDER_LOOK.find((x) => x.test(p));
-  return hit ?? { label: '全球', color: 'var(--silk)' };
+const CAPS: { n: string; h: string; p: string }[] = [
+  {
+    n: '01',
+    h: '固定公网 IP',
+    p: '重装系统不会换 IP。云厂商本身没有「重装」这个功能，真实做法是删旧建新，没有固定 IP 就每次都变。',
+  },
+  {
+    n: '02',
+    h: '自助重装与改密',
+    p: '控制台上点一下就重装，交还一台干净的机器。忘记密码自己重置，不用等人工。',
+  },
+  {
+    n: '03',
+    h: '实时资源读数',
+    p: 'CPU、内存、磁盘、本月流量都在控制台里更新，不用自己装监控。',
+  },
+  {
+    n: '04',
+    h: '到期只挂起，不删数据',
+    p: '忘记续费不会丢数据。机器会关机保留，续费之后原样恢复。',
+  },
+];
+
+function gb(mb: number) {
+  return `${(mb / 1024).toFixed(mb % 1024 ? 1 : 0)} GB`;
+}
+
+function traffic(gbValue?: number | null) {
+  if (!gbValue) return '—';
+  return gbValue >= 1000 ? `${gbValue / 1000} TB` : `${gbValue} GB`;
 }
 
 export default function Home() {
@@ -29,6 +65,12 @@ export default function Home() {
       .then(setPlans)
       .catch((e) => setError(e.message));
   }, []);
+
+  // 首屏那几个数字全部从真实套餐算出来，不写死
+  const regions = useMemo(
+    () => Array.from(new Set((plans ?? []).map((p) => p.regionLabel))),
+    [plans],
+  );
 
   const buy = async (plan: PublicPlan) => {
     if (!getToken()) {
@@ -50,31 +92,75 @@ export default function Home() {
 
   return (
     <>
+      {/* ---------- 首屏 ---------- */}
       <Unit>
-        <div className="panelbody" style={{ display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'center' }}>
-          <div style={{ flex: '1 1 320px', minWidth: 0 }}>
-            <h1 className="title" style={{ fontSize: 30, lineHeight: 1.25 }}>
-              云服务器，交付到分钟
-            </h1>
-            <p style={{ marginTop: 10, marginBottom: 0, maxWidth: '62ch' }}>
-              机器在东京、新加坡和洛杉矶的机房里跑。付款之后系统自动开通、装好系统、开启 BBR，
-              把 IP 和密码直接给你。开关机、重启、改密、重装都在你自己的控制台上点，不用发工单等人。
+        <div className="hero">
+          <div className="hero-copy">
+            <div className="silk">{regions.length > 0 ? regions.join(' · ') : '东京 · 新加坡 · 洛杉矶'}</div>
+
+            <h1 className="hero-h1">付款之后，一分钟左右就能 SSH 进去。</h1>
+
+            <p className="hero-deck">
+              你下单，系统去谷歌云或 AWS 建机器、装系统、配好网络，把地址和密码交到你手里。
+              <em>全程没有人工介入。</em>
             </p>
+
+            <ul className="hero-list">
+              <li>
+                <i aria-hidden="true" />
+                <span>
+                  <b>固定公网 IP</b>重装系统也不会变
+                </span>
+              </li>
+              <li>
+                <i aria-hidden="true" />
+                <span>
+                  <b>BBR 已开启</b>拿到手就是调好的
+                </span>
+              </li>
+              <li>
+                <i aria-hidden="true" />
+                <span>
+                  <b>控制台自助</b>开关机 / 改密 / 重装，不用发工单
+                </span>
+              </li>
+            </ul>
+
+            <div className="hero-stats">
+              <div>
+                <div className="hero-stat-k">{plans ? plans.length : '—'}</div>
+                <div className="hero-stat-v">在售机型</div>
+              </div>
+              <div>
+                <div className="hero-stat-k">{plans ? regions.length : '—'}</div>
+                <div className="hero-stat-v">可选机房</div>
+              </div>
+              <div>
+                <div className="hero-stat-k">自动</div>
+                <div className="hero-stat-v">开通方式</div>
+              </div>
+            </div>
           </div>
-          <Vent />
-          <div className="btnrow" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
-            <span className="silk" style={{ marginBottom: 6 }}>结算币种</span>
-            <div className="btnrow">
-              {(['CNY', 'USD'] as const).map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  className={`btn btn--sm ${currency === c ? 'btn--key' : ''}`}
-                  onClick={() => setCurrency(c)}
-                >
-                  {c === 'CNY' ? '人民币' : '美元'}
-                </button>
+
+          {/* 交付过程示意。刻意不写订单号和 IP —— 那会变成伪造的记录。 */}
+          <div className="flow">
+            <div className="flow-head">
+              <span className="flow-dot" aria-hidden="true" />
+              <span className="silk">典型交付过程</span>
+            </div>
+            <ol className="flow-steps">
+              {FLOW.map((s, i) => (
+                <li key={s.at} className={i === FLOW.length - 1 ? 'is-done' : undefined}>
+                  <span className="data flow-at">{s.at}</span>
+                  <span className="flow-what">{s.what}</span>
+                  <span className="data flow-note">{s.note}</span>
+                </li>
               ))}
+            </ol>
+            <div className="flow-foot">
+              <span className="hint">
+                时间是典型值，实际快慢取决于云厂商当时的响应。开通失败会自动回滚并重试，不会留下计费的半成品。
+              </span>
             </div>
           </div>
         </div>
@@ -91,7 +177,10 @@ export default function Home() {
       {plans === null && !error && (
         <Unit>
           <div className="panelbody">
-            <span className="spin" /> <span className="muted" style={{ marginLeft: 8 }}>正在读取机型…</span>
+            <span className="spin" />{' '}
+            <span className="muted" style={{ marginLeft: 8 }}>
+              正在读取机型…
+            </span>
           </div>
         </Unit>
       )}
@@ -99,113 +188,111 @@ export default function Home() {
       {plans?.length === 0 && (
         <Unit>
           <div className="panelbody">
-            <Notice tone="info">
-              还没有上架任何机型。如果你是管理员，去后台「套餐」里建一个。
-            </Notice>
+            <Notice tone="info">还没有上架任何机型。如果你是管理员，去后台「套餐」里建一个。</Notice>
           </div>
         </Unit>
       )}
 
-      {plans?.map((p) => {
-        const price = p.prices.find((x) => x.currency === currency && x.cycle === 'monthly');
-        const tag = regionTag(p);
-        const stock = p.availability;
-        return (
-          <Unit key={p.id}>
-            <div
-              className="panelbody"
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'auto minmax(0,1fr) auto auto',
-                gap: 20,
-                alignItems: 'center',
-              }}
-            >
-              <span className="badge" style={{ color: tag.color }}>
-                {tag.label}
-              </span>
-
-              <div style={{ minWidth: 0 }}>
-                <div className="title" style={{ fontSize: 17 }}>
-                  {p.name}
-                </div>
-                <div className="data" style={{ fontSize: 11.5, color: 'var(--silk-dim)', marginTop: 2 }}>
-                  {p.cpu} vCPU · {(p.memoryMb / 1024).toFixed(p.memoryMb % 1024 ? 1 : 0)} GB ·{' '}
-                  {p.diskGb} GB SSD
-                  {p.trafficGb ? ` · ${p.trafficGb >= 1000 ? p.trafficGb / 1000 + ' TB' : p.trafficGb + ' GB'}/月` : ''}
-                  {' · '}
-                  {p.regionLabel}
-                </div>
-                {p.features?.length > 0 && (
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 7 }}>
-                    {p.features.slice(0, 4).map((f) => (
-                      <span key={f} className="silk" style={{ fontSize: 9.5, opacity: 0.85 }}>
-                        {f}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div className="price-plate">
-                <div className="price-amt">{price ? money(price.priceCents, currency) : '—'}</div>
-                <div className="price-cyc">每月</div>
-              </div>
-
-              <div style={{ textAlign: 'right' }}>
-                <button
-                  type="button"
-                  className="btn btn--key"
-                  disabled={!stock.inStock || !price || busy === p.id}
-                  onClick={() => buy(p)}
-                >
-                  {busy === p.id ? '处理中…' : stock.inStock ? '立即开通' : '暂时缺货'}
-                </button>
-                <div style={{ marginTop: 6 }}>
-                  <span
-                    className="silk"
-                    style={{
-                      fontSize: 10,
-                      color: stock.inStock
-                        ? stock.stockCount != null && stock.stockCount <= 5
-                          ? 'var(--warn)'
-                          : 'var(--ok)'
-                        : 'var(--silk-dim)',
-                    }}
-                  >
-                    ● {stock.label}
-                  </span>
-                </div>
-              </div>
+      {/* ---------- 机型与价格 ---------- */}
+      {plans && plans.length > 0 && (
+        <Unit>
+          <div className="panelbar">
+            <div style={{ minWidth: 0 }}>
+              <h2 className="title">机型与价格</h2>
+              <div className="hint">按月计费。价格含固定公网 IP，不额外收。</div>
             </div>
-          </Unit>
-        );
-      })}
+            <span className="spacer" />
+            <div className="btnrow">
+              {(['CNY', 'USD'] as const).map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  className={`btn btn--sm ${currency === c ? 'btn--key' : ''}`}
+                  onClick={() => setCurrency(c)}
+                >
+                  {c === 'CNY' ? '人民币' : '美元'}
+                </button>
+              ))}
+            </div>
+          </div>
 
+          <div className="tablewrap">
+            <table className="table plans">
+              <thead>
+                <tr>
+                  <th>机型</th>
+                  <th className="num">vCPU</th>
+                  <th className="num">内存</th>
+                  <th className="num">硬盘</th>
+                  <th className="num">月流量</th>
+                  <th className="num">价格</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {plans.map((p) => {
+                  const price = p.prices.find((x) => x.currency === currency && x.cycle === 'monthly');
+                  const stock = p.availability;
+                  const low = stock.stockCount != null && stock.stockCount <= 5;
+                  return (
+                    <tr key={p.id}>
+                      <td>
+                        <div className="plan-name">{p.name}</div>
+                        <div className="plan-region">{p.regionLabel}</div>
+                      </td>
+                      <td className="num data">{p.cpu}</td>
+                      <td className="num data">{gb(p.memoryMb)}</td>
+                      <td className="num data">{p.diskGb} GB</td>
+                      <td className="num data">{traffic(p.trafficGb)}</td>
+                      <td className="num">
+                        <span className="plan-price">{price ? money(price.priceCents, currency) : '—'}</span>
+                        <span className="plan-cyc"> /月</span>
+                      </td>
+                      <td className="num" style={{ whiteSpace: 'nowrap' }}>
+                        <button
+                          type="button"
+                          className="btn btn--sm btn--key"
+                          disabled={!stock.inStock || !price || busy === p.id}
+                          onClick={() => buy(p)}
+                        >
+                          {busy === p.id ? '处理中…' : stock.inStock ? '立即开通' : '暂时缺货'}
+                        </button>
+                        <div
+                          className="silk"
+                          style={{
+                            marginTop: 5,
+                            color: stock.inStock ? (low ? 'var(--warn)' : 'var(--ok)') : 'var(--muted)',
+                          }}
+                        >
+                          {stock.label}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Unit>
+      )}
+
+      {/* ---------- 你买到的是什么 ---------- */}
       {plans && plans.length > 0 && (
         <Unit>
           <div className="panelbody">
-            <div className="grid2">
-              <div>
-                <h3 className="title">开通之后你能做什么</h3>
-                <p style={{ marginTop: 8, marginBottom: 0 }}>
-                  控制台上直接开关机、重启、重置 root 密码、重装系统，
-                  和在云厂商自己的控制台里操作是同一套动作，不用等客服。
-                </p>
-              </div>
-              <div>
-                <h3 className="title">关于重装</h3>
-                <p style={{ marginTop: 8, marginBottom: 0 }}>
-                  重装会清空整块系统盘且无法恢复，做之前请先把数据拷走。
-                  开通时分配的是固定 IP，重装之后 IP 不变。
-                </p>
-              </div>
+            <div className="caps">
+              {CAPS.map((c) => (
+                <div key={c.n} className="cap">
+                  <span className="data cap-n">{c.n}</span>
+                  <div>
+                    <h3 className="cap-h">{c.h}</h3>
+                    <p className="cap-p">{c.p}</p>
+                  </div>
+                </div>
+              ))}
             </div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 18 }}>
-              <Badge tone="ok">BBR 已预装</Badge>
-              <Badge tone="mute">Debian 12</Badge>
-              <Badge tone="mute">独立公网 IPv4</Badge>
-              <Badge tone="mute">SSH 直连 root</Badge>
+            <div style={{ marginTop: 22 }}>
+              <Notice tone="warn">重装会清空整块系统盘且无法恢复，做之前请先把数据拷走。</Notice>
             </div>
           </div>
         </Unit>

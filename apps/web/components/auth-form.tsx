@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { api, setToken, type Me } from '@/lib/api';
-import { Notice, Unit } from './rack';
+import { Notice, Unit } from './ui';
 
 interface Captcha {
   id: string;
@@ -148,15 +148,16 @@ export function AuthForm({ mode }: { mode: 'login' | 'register' }) {
                 onClick={refreshCaptcha}
                 title="换一张"
                 style={{
-                  border: 0,
+                  border: '1px solid var(--hairline-2)',
                   padding: 0,
                   borderRadius: 3,
                   cursor: 'pointer',
-                  background: '#0d0f12',
-                  boxShadow: 'inset 0 2px 4px rgba(0,0,0,.85), 0 1px 0 rgba(255,255,255,.08)',
+                  background: 'rgba(255,253,254,.8)',
                   width: 124,
+                  height: 38,
                   display: 'grid',
                   placeItems: 'center',
+                  overflow: 'hidden',
                 }}
               >
                 {captcha ? (

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { api, formatDate } from '@/lib/api';
-import { Notice, PanelBar, Unit } from '@/components/rack';
+import { Notice, PanelBar, Unit } from '@/components/ui';
 
 export default function AdminUsers() {
   const [data, setData] = useState<any>(null);
@@ -36,7 +36,7 @@ export default function AdminUsers() {
   return (
     <>
       <Unit>
-        <PanelBar slot="U01" title="用户" meta={data ? `共 ${data.total} 人` : undefined} />
+        <PanelBar title="用户" meta={data ? `共 ${data.total} 人` : undefined} />
         <div className="panelbody">
           <div className="row">
             <input

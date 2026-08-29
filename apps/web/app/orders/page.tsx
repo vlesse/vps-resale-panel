@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { api, formatDate, getToken, money, type OrderItem } from '@/lib/api';
-import { Notice, PanelBar, Unit } from '@/components/rack';
+import { Notice, PanelBar, Unit } from '@/components/ui';
 
 const TONE: Record<string, 'ok' | 'warn' | 'crit' | 'info' | 'mute'> = {
   pending_payment: 'warn',
@@ -35,7 +35,7 @@ export default function Orders() {
   return (
     <>
       <Unit>
-        <PanelBar slot="U01" title="我的订单" meta={rows ? `共 ${rows.length} 笔` : undefined} />
+        <PanelBar title="我的订单" meta={rows ? `共 ${rows.length} 笔` : undefined} />
       </Unit>
 
       <Unit>

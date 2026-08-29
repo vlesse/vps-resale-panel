@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { api, money } from '@/lib/api';
-import { Badge, Notice, PanelBar, Unit } from '@/components/rack';
+import { Badge, Notice, PanelBar, Unit } from '@/components/ui';
 
 interface Capability {
   kind: string;
@@ -92,7 +92,7 @@ export default function AdminPlans() {
   return (
     <>
       <Unit>
-        <PanelBar slot="U01" title="套餐" meta={rows ? `共 ${rows.length} 个` : undefined}>
+        <PanelBar title="套餐" meta={rows ? `共 ${rows.length} 个` : undefined}>
           <div className="spacer" />
           <button className="btn btn--sm btn--key" onClick={() => setCreating((v) => !v)}>
             {creating ? '收起' : '+ 新建套餐'}
@@ -107,7 +107,7 @@ export default function AdminPlans() {
 
       {creating && (
         <Unit>
-          <PanelBar slot="U02" title="新建套餐" />
+          <PanelBar title="新建套餐" />
           <div className="panelbody">
             <div className="grid2">
               <div className="field">
@@ -237,7 +237,7 @@ export default function AdminPlans() {
             <div className="row" style={{ justifyContent: 'space-between' }}>
               <div style={{ minWidth: 0 }}>
                 <div className="title" style={{ fontSize: 16 }}>{p.name}</div>
-                <div className="data" style={{ fontSize: 11.5, color: 'var(--silk-dim)', marginTop: 3 }}>
+                <div className="data" style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 3 }}>
                   {p.slug} · {p.cpu}C {(p.memoryMb / 1024).toFixed(0)}G {p.diskGb}GB · {p.regionLabel}
                 </div>
                 <div className="silk" style={{ fontSize: 9.5, marginTop: 5 }}>

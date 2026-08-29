@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { api, formatDate } from '@/lib/api';
-import { Notice, PanelBar, Unit } from '@/components/rack';
+import { Notice, PanelBar, Unit } from '@/components/ui';
 
 const TONE: Record<string, any> = {
   ready: 'ok',
@@ -67,7 +67,7 @@ export default function AdminMachines() {
   return (
     <>
       <Unit>
-        <PanelBar slot="U01" title="机器" meta={data ? `共 ${data.total} 台` : undefined} />
+        <PanelBar title="机器" meta={data ? `共 ${data.total} 台` : undefined} />
         <div className="panelbody">
           <div className="row">
             <button

@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { api, formatDay, getToken, SERVICE_STATUS, type ServiceItem } from '@/lib/api';
-import { Led, Notice, PanelBar, Unit } from '@/components/rack';
+import { Led, Notice, PanelBar, Unit } from '@/components/ui';
 
 export default function Dashboard() {
   const router = useRouter();
@@ -28,7 +28,7 @@ export default function Dashboard() {
   return (
     <>
       <Unit>
-        <PanelBar slot="U01" title="我的机器" meta={rows ? `共 ${rows.length} 台` : undefined} />
+        <PanelBar title="我的机器" meta={rows ? `共 ${rows.length} 台` : undefined} />
       </Unit>
 
       {error && (
@@ -81,7 +81,7 @@ export default function Dashboard() {
                 <div className="title" style={{ fontSize: 16 }}>
                   {s.planName ?? '机器'}
                 </div>
-                <div className="data" style={{ fontSize: 12, color: 'var(--silk-dim)', marginTop: 2 }}>
+                <div className="data" style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>
                   {s.ip ?? (s.status === 'provisioning' ? '正在开通，尚未分配 IP' : s.status === 'error' ? '开通失败，没有分配到机器' : '没有可用地址')}
                   {s.cpu ? ` · ${s.cpu} vCPU · ${(s.memoryMb! / 1024).toFixed(0)} GB · ${s.diskGb} GB` : ''}
                 </div>

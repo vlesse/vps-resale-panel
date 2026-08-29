@@ -13,20 +13,36 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
-  // 拟物界面里有仪表和小字，允许用户放大
+  // 界面里有不少小号等宽数字，允许用户放大
   maximumScale: 5,
-  themeColor: '#0a0b0d',
+  themeColor: '#f4eef1',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="zh-CN">
       <body>
-        <div className="rack">
-          <Nav />
-          {children}
-          <p className="foot">RenrenYings Cloud · 机架编号 RY-01</p>
+        {/*
+          五色柔光。固定在视口上，每一团按自己的周期缓慢漂移，
+          周期两两不同，所以永远不会回到同一个构图。
+          纯装饰，对读屏软件隐藏。
+        */}
+        <div className="mesh" aria-hidden="true">
+          <span className="blob blob--1" />
+          <span className="blob blob--2" />
+          <span className="blob blob--3" />
+          <span className="blob blob--4" />
+          <span className="blob blob--5" />
         </div>
+
+        <Nav />
+        <div className="rack">{children}</div>
+
+        <footer className="foot">
+          <span>RenrenYings Cloud</span>
+          <span className="spacer" />
+          <span>云服务器 · 东京 / 新加坡 / 洛杉矶</span>
+        </footer>
       </body>
     </html>
   );

@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { api, formatDate, getToken, type Me } from '@/lib/api';
-import { Notice, PanelBar, Readout, Unit } from '@/components/rack';
+import { Notice, PanelBar, Readout, Unit } from '@/components/ui';
 
 export default function Profile() {
   const router = useRouter();
@@ -54,7 +54,7 @@ export default function Profile() {
   return (
     <>
       <Unit>
-        <PanelBar slot="U01" title="账户" meta={me.email} />
+        <PanelBar title="账户" meta={me.email} />
         <div className="panelbody">
           <div className="well">
             <div className="readout">
@@ -69,7 +69,7 @@ export default function Profile() {
       </Unit>
 
       <Unit>
-        <PanelBar slot="U02" title="资料" />
+        <PanelBar title="资料" />
         <div className="panelbody">
           <div className="grid2">
             <div className="field">
@@ -86,7 +86,7 @@ export default function Profile() {
       </Unit>
 
       <Unit>
-        <PanelBar slot="U03" title="修改密码" />
+        <PanelBar title="修改密码" />
         <div className="panelbody">
           <div className="grid2">
             <div className="field">

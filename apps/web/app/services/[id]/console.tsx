@@ -14,7 +14,7 @@ import {
   SERVICE_STATUS,
   type ServiceDetail,
 } from '@/lib/api';
-import { Gauge, Led, Meter, Notice, PanelBar, Readout, Trace, Unit } from '@/components/rack';
+import { Gauge, Led, Meter, Notice, PanelBar, Readout, Trace, Unit } from '@/components/ui';
 
 type Busy = null | 'start' | 'stop' | 'reboot' | 'reset' | 'rebuild' | 'refresh';
 
@@ -137,13 +137,13 @@ export function Console({ id }: { id: string }) {
     const stillWorking = jobPending || svc.status === 'provisioning';
     return (
       <Unit>
-        <PanelBar slot="U07" title={svc.planName ?? '我的机器'} meta={svc.serviceNo} />
+        <PanelBar title={svc.planName ?? '我的机器'} meta={svc.serviceNo} />
         <div className="panelbody">
           {stillWorking ? (
             <>
               <div className="row" style={{ justifyContent: 'space-between' }}>
                 <span className="title" style={{ fontSize: 16 }}>正在开通这台机器</span>
-                <span className="data" style={{ color: 'var(--amber)' }}>{job?.progress ?? 0}%</span>
+                <span className="data" style={{ color: 'var(--accent)' }}>{job?.progress ?? 0}%</span>
               </div>
               <div className="bar" style={{ marginTop: 10, height: 12 }}>
                 <span className="bar-fill" style={{ width: `${job?.progress ?? 0}%` }} />
@@ -165,7 +165,7 @@ export function Console({ id }: { id: string }) {
               {(job?.step || svc.suspendReason) && (
                 <div className="well" style={{ marginTop: 14 }}>
                   <div className="ro-k">失败原因</div>
-                  <div style={{ marginTop: 6, color: 'var(--silk)', fontSize: 13.5 }}>
+                  <div style={{ marginTop: 6, color: 'var(--ink-2)', fontSize: 13.5 }}>
                     {svc.suspendReason ?? job?.step}
                   </div>
                 </div>
@@ -194,7 +194,7 @@ export function Console({ id }: { id: string }) {
               <span className="title" style={{ fontSize: 15 }}>
                 {job.kind === 'rebuild' ? '正在重装系统' : '正在开通'}
               </span>
-              <span className="data" style={{ color: 'var(--amber)' }}>{job.progress}%</span>
+              <span className="data" style={{ color: 'var(--accent)' }}>{job.progress}%</span>
             </div>
             <div className="bar" style={{ marginTop: 10, height: 12 }}>
               <span className="bar-fill" style={{ width: `${job.progress}%` }} />
@@ -210,7 +210,6 @@ export function Console({ id }: { id: string }) {
       {/* 2U 控制台 */}
       <Unit>
         <PanelBar
-          slot="U07"
           title={svc.planName ?? '我的机器'}
           meta={`${svc.serviceNo} · ${svc.regionLabel ?? ''} · 到期 ${formatDay(svc.expireAt)}`}
         >
@@ -261,7 +260,7 @@ export function Console({ id }: { id: string }) {
               <Gauge value={live?.loadAvg1} max={Math.max(4, (svc.cpu ?? 2) * 2)} />
               <div>
                 <div className="ro-k">系统负载</div>
-                <div className="data" style={{ fontSize: 24, color: 'var(--etch)' }}>
+                <div className="data" style={{ fontSize: 24, color: 'var(--ink)' }}>
                   {live?.loadAvg1?.toFixed(2) ?? '—'}
                 </div>
                 <div className="silk" style={{ marginTop: 2 }}>
@@ -376,7 +375,7 @@ export function Console({ id }: { id: string }) {
       {/* 交付信息 */}
       {d && (
         <Unit>
-          <PanelBar slot="U09" title="登录信息" />
+          <PanelBar title="登录信息" />
           <div className="panelbody">
             <div className="well">
               <div className="readout">
@@ -418,7 +417,7 @@ export function Console({ id }: { id: string }) {
       {/* 操作流水 */}
       {svc.recentActions.length > 0 && (
         <Unit>
-          <PanelBar slot="U10" title="最近操作" />
+          <PanelBar title="最近操作" />
           <div className="panelbody">
             <div className="tablewrap">
               <table className="table">

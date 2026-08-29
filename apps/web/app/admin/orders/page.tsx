@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { api, formatDate, money } from '@/lib/api';
-import { Notice, PanelBar, Unit } from '@/components/rack';
+import { Notice, PanelBar, Unit } from '@/components/ui';
 
 const TONE: Record<string, any> = {
   pending_payment: 'warn',
@@ -48,7 +48,7 @@ export default function AdminOrders() {
   return (
     <>
       <Unit>
-        <PanelBar slot="U01" title="订单" meta={data ? `共 ${data.total} 笔` : undefined} />
+        <PanelBar title="订单" meta={data ? `共 ${data.total} 笔` : undefined} />
         <div className="panelbody">
           <div className="row">
             <input

@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { api, formatDate, money } from '@/lib/api';
-import { Notice, PanelBar, Readout, Unit } from '@/components/rack';
+import { Notice, PanelBar, Readout, Unit } from '@/components/ui';
 
 interface Orphans {
   count: number;
@@ -47,7 +47,7 @@ export default function AdminHome() {
       {/* 最要紧的一条：可能正在烧钱的残留实例 */}
       {orphans && orphans.count > 0 && (
         <Unit>
-          <PanelBar slot="!!!" title="疑似还在计费的残留实例" />
+          <PanelBar title="疑似还在计费的残留实例" />
           <div className="panelbody">
             <Notice tone="crit">{orphans.hint}</Notice>
             <div className="tablewrap" style={{ marginTop: 14 }}>
@@ -134,7 +134,7 @@ export default function AdminHome() {
       )}
 
       <Unit>
-        <PanelBar slot="U01" title="总览" />
+        <PanelBar title="总览" />
         <div className="panelbody">
           <div className="well">
             <div className="readout">
@@ -163,7 +163,7 @@ export default function AdminHome() {
       </Unit>
 
       <Unit>
-        <PanelBar slot="U02" title="最近订单" />
+        <PanelBar title="最近订单" />
         <div className="panelbody">
           {!orders?.rows?.length ? (
             <span className="muted">还没有订单</span>

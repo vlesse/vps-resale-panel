@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
-import { Badge, Notice, PanelBar, Unit } from '@/components/rack';
+import { Badge, Notice, PanelBar, Unit } from '@/components/ui';
 
 interface Capability {
   kind: string;
@@ -109,7 +109,7 @@ export default function CloudAccounts() {
   return (
     <>
       <Unit>
-        <PanelBar slot="U01" title="云账号" meta="面板拿这些凭据代表你去建机器" />
+        <PanelBar title="云账号" meta="面板拿这些凭据代表你去建机器" />
         <div className="panelbody">
           <Notice tone="info">
             凭据会用 AES-256-GCM 加密后存进数据库，任何接口都不会再把它读出来 ——
@@ -147,7 +147,7 @@ export default function CloudAccounts() {
 
       {cap && (
         <Unit>
-          <PanelBar slot="U02" title={`添加 ${cap.label}`} />
+          <PanelBar title={`添加 ${cap.label}`} />
           <div className="panelbody">
             <div className="field" style={{ maxWidth: 420 }}>
               <label className="label">账号备注名</label>
@@ -234,7 +234,7 @@ export default function CloudAccounts() {
                 {Object.entries(a.credentialSummary).map(([k, v]) => (
                   <div key={k}>
                     <div className="ro-k">{k}</div>
-                    <div className="data" style={{ fontSize: 12.5, color: 'var(--silk)', wordBreak: 'break-all' }}>
+                    <div className="data" style={{ fontSize: 12.5, color: 'var(--ink-2)', wordBreak: 'break-all' }}>
                       {v}
                     </div>
                   </div>

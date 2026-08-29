@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
-import { Badge, Notice, PanelBar, Unit } from '@/components/rack';
+import { Badge, Notice, PanelBar, Unit } from '@/components/ui';
 
 interface Channel {
   id: string;
@@ -72,7 +72,7 @@ export default function PayChannels() {
   return (
     <>
       <Unit>
-        <PanelBar slot="U01" title="支付通道" meta="用户结算页看到的付款方式">
+        <PanelBar title="支付通道" meta="用户结算页看到的付款方式">
           <div className="spacer" />
           <div className="btnrow">
             <button className={`btn btn--sm ${adding === 'jeepay' ? 'btn--key' : ''}`} onClick={() => setAdding(adding === 'jeepay' ? null : 'jeepay')}>
@@ -99,7 +99,7 @@ export default function PayChannels() {
 
       {adding && (
         <Unit>
-          <PanelBar slot="U02" title={adding === 'manual' ? '添加线下转账' : '添加 Jeepay 通道'} />
+          <PanelBar title={adding === 'manual' ? '添加线下转账' : '添加 Jeepay 通道'} />
           <div className="panelbody">
             <div className="grid2">
               <div className="field">
@@ -195,7 +195,7 @@ export default function PayChannels() {
                 {Object.entries(c.credentialSummary).map(([k, v]) => (
                   <div key={k}>
                     <div className="ro-k">{k}</div>
-                    <div className="data" style={{ fontSize: 12.5, color: 'var(--silk)' }}>{v}</div>
+                    <div className="data" style={{ fontSize: 12.5, color: 'var(--ink-2)' }}>{v}</div>
                   </div>
                 ))}
               </div>
