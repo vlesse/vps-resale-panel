@@ -73,8 +73,8 @@ export default function Dashboard() {
               }}
             >
               <div className="leds">
-                <Led kind="run" label="PWR" on={running} />
-                <Led kind="io" label="I/O" on={running} blink="io" />
+                <Led kind="run" label="电源" on={running} />
+                <Led kind="io" label="磁盘" on={running} blink="io" />
               </div>
 
               <div style={{ minWidth: 0 }}>

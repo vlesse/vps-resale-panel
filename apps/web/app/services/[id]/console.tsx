@@ -215,10 +215,10 @@ export function Console({ id }: { id: string }) {
         >
           <div className="spacer" />
           <div className="leds">
-            <Led kind="run" label="PWR" on={running} />
-            <Led kind="io" label="I/O" on={running} blink="io" />
-            <Led kind="net" label="NET" on={running} blink="net" />
-            <Led kind="err" label="ERR" on={svc.status === 'error'} />
+            <Led kind="run" label="电源" on={running} />
+            <Led kind="io" label="磁盘" on={running} blink="io" />
+            <Led kind="net" label="网络" on={running} blink="net" />
+            <Led kind="err" label="故障" on={svc.status === 'error'} />
           </div>
         </PanelBar>
 
