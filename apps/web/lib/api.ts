@@ -142,6 +142,45 @@ export interface PublicPlan {
   availability: Availability;
   capabilities: { canPowerOn: boolean; canRebuild: boolean };
   sortOrder: number;
+
+  /** 选购页按这个分栏。没填分类的老套餐是 'other' / '其它'。 */
+  categoryKey: string;
+  categoryLabel: string;
+  categorySort: number;
+
+  /** 自定义档：不是固定规格，用户自己选核心 / 内存 / 硬盘 */
+  isCustom: boolean;
+  custom: CustomOffer | null;
+}
+
+export interface CustomOffer {
+  machineFamily: string;
+  disk: { minGb: number; maxGb: number; stepGb: number };
+  /** 价格系数，按币种分开。前端拿它实时算价，服务端下单时会重算一遍。 */
+  price: Record<string, {
+    baseCents: number;
+    perCpuCents: number;
+    perGbRamCents: number;
+    perGbDiskCents: number;
+  }>;
+  defaults: { cpu: number; memoryMb: number; diskGb: number };
+  /** 每个核心数下内存的可选范围不一样，服务端算好了直接用 */
+  cpuOptions: { cpu: number; memory: { minGb: number; maxGb: number; stepGb: number } }[];
+}
+
+export function priceCustomLocal(
+  offer: CustomOffer,
+  spec: { cpu: number; memoryMb: number; diskGb: number },
+  currency: string,
+): number | null {
+  const r = offer.price[currency];
+  if (!r) return null;
+  return Math.round(
+    r.baseCents +
+      spec.cpu * r.perCpuCents +
+      (spec.memoryMb / 1024) * r.perGbRamCents +
+      spec.diskGb * r.perGbDiskCents,
+  );
 }
 
 export interface ServiceItem {

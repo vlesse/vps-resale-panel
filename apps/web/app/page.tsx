@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { api, getToken, money, type PublicPlan } from '@/lib/api';
+import { CustomBuilder } from '@/components/custom-builder';
 import { Notice, Unit } from '@/components/ui';
 
 /**
@@ -58,6 +59,7 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [currency, setCurrency] = useState<'CNY' | 'USD'>('CNY');
   const [busy, setBusy] = useState<string | null>(null);
+  const [tab, setTab] = useState<string | null>(null);
 
   useEffect(() => {
     api
@@ -72,7 +74,25 @@ export default function Home() {
     [plans],
   );
 
-  const buy = async (plan: PublicPlan) => {
+  // 按分类分栏，参照绿云的门店结构
+  const groups = useMemo(() => {
+    const m = new Map<string, { key: string; label: string; sort: number; plans: PublicPlan[] }>();
+    for (const p of plans ?? []) {
+      const g = m.get(p.categoryKey) ?? {
+        key: p.categoryKey,
+        label: p.categoryLabel,
+        sort: p.categorySort,
+        plans: [],
+      };
+      g.plans.push(p);
+      m.set(p.categoryKey, g);
+    }
+    return [...m.values()].sort((a, b) => a.sort - b.sort || a.label.localeCompare(b.label));
+  }, [plans]);
+
+  const active = groups.find((g) => g.key === tab) ?? groups[0];
+
+  const buy = async (plan: PublicPlan, customSpec?: { cpu: number; memoryMb: number; diskGb: number }) => {
     if (!getToken()) {
       router.push(`/login?next=${encodeURIComponent('/')}`);
       return;
@@ -82,6 +102,7 @@ export default function Home() {
       const res = await api.post<{ orderNo: string }>('/api/orders', {
         planId: plan.id,
         currency,
+        ...(customSpec ? { customSpec } : {}),
       });
       router.push(`/pay/${res.orderNo}`);
     } catch (e: any) {
@@ -193,8 +214,8 @@ export default function Home() {
         </Unit>
       )}
 
-      {/* ---------- 机型与价格 ---------- */}
-      {plans && plans.length > 0 && (
+      {/* ---------- 机型与价格：左边分类，右边套餐 ---------- */}
+      {plans && plans.length > 0 && active && (
         <Unit>
           <div className="panelbar">
             <div style={{ minWidth: 0 }}>
@@ -216,69 +237,127 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="tablewrap">
-            <table className="table plans table--cards">
-              <thead>
-                <tr>
-                  <th>机型</th>
-                  <th className="num r">vCPU</th>
-                  <th className="num r">内存</th>
-                  <th className="num r">硬盘</th>
-                  <th className="num r">月流量</th>
-                  <th className="num r">价格</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {plans.map((p) => {
-                  const price = p.prices.find((x) => x.currency === currency && x.cycle === 'monthly');
-                  const stock = p.availability;
-                  const low = stock.stockCount != null && stock.stockCount <= 5;
-                  return (
-                    <tr key={p.id}>
-                      <td>
-                        <div className="plan-name">{p.name}</div>
-                        <div className="plan-region">{p.regionLabel}</div>
-                      </td>
-                      <td className="num data r" data-label="vCPU">{p.cpu}</td>
-                      <td className="num data r" data-label="内存">{gb(p.memoryMb)}</td>
-                      <td className="num data r" data-label="硬盘">{p.diskGb} GB</td>
-                      <td className="num data r" data-label="月流量">{traffic(p.trafficGb)}</td>
-                      <td className="num r" data-label="价格">
-                        {/* 包一层，窄屏上两端对齐时价格和「/月」才不会被拆到两头 */}
-                        <span>
-                          <span className="plan-price">{price ? money(price.priceCents, currency) : '—'}</span>
-                          <span className="plan-cyc"> /月</span>
-                        </span>
-                      </td>
-                      <td className="num r" data-role="action" style={{ whiteSpace: 'nowrap' }}>
-                        <button
-                          type="button"
-                          className="btn btn--sm btn--key"
-                          disabled={!stock.inStock || !price || busy === p.id}
-                          onClick={() => buy(p)}
-                        >
-                          {busy === p.id ? '处理中…' : stock.inStock ? '立即开通' : '暂时缺货'}
-                        </button>
-                        <div
-                          className="silk"
-                          style={{
-                            marginTop: 5,
-                            color: stock.inStock ? (low ? 'var(--warn)' : 'var(--ok)') : 'var(--muted)',
-                          }}
-                        >
-                          {stock.label}
+          <div className="shop">
+            {/* 分类栏。窄屏上会变成横向可滑的一条。 */}
+            <nav className="shop-cats" aria-label="机房分类">
+              {groups.map((g) => (
+                <button
+                  key={g.key}
+                  type="button"
+                  className="shop-cat"
+                  data-on={g.key === active.key}
+                  onClick={() => setTab(g.key)}
+                >
+                  <span>{g.label}</span>
+                  <span className="data shop-cat-n">{g.plans.length}</span>
+                </button>
+              ))}
+            </nav>
+
+            <div className="shop-body">
+              {active.plans.filter((p) => !p.isCustom).length > 0 && (
+                <div className="tablewrap">
+                  <table className="table plans table--cards">
+                    <thead>
+                      <tr>
+                        <th>机型</th>
+                        <th className="num r">vCPU</th>
+                        <th className="num r">内存</th>
+                        <th className="num r">硬盘</th>
+                        <th className="num r">月流量</th>
+                        <th className="num r">价格</th>
+                        <th />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {active.plans
+                        .filter((p) => !p.isCustom)
+                        .map((p) => {
+                          const price = p.prices.find(
+                            (x) => x.currency === currency && x.cycle === 'monthly',
+                          );
+                          const stock = p.availability;
+                          const low = stock.stockCount != null && stock.stockCount <= 5;
+                          return (
+                            <tr key={p.id}>
+                              <td>
+                                <div className="plan-name">{p.name}</div>
+                                <div className="plan-region">{p.regionLabel}</div>
+                              </td>
+                              <td className="num data r" data-label="vCPU">{p.cpu}</td>
+                              <td className="num data r" data-label="内存">{gb(p.memoryMb)}</td>
+                              <td className="num data r" data-label="硬盘">{p.diskGb} GB</td>
+                              <td className="num data r" data-label="月流量">{traffic(p.trafficGb)}</td>
+                              <td className="num r" data-label="价格">
+                                <span>
+                                  <span className="plan-price">
+                                    {price ? money(price.priceCents, currency) : '—'}
+                                  </span>
+                                  <span className="plan-cyc"> /月</span>
+                                </span>
+                              </td>
+                              <td className="num r" data-role="action" style={{ whiteSpace: 'nowrap' }}>
+                                <button
+                                  type="button"
+                                  className="btn btn--sm btn--key"
+                                  disabled={!stock.inStock || !price || busy === p.id}
+                                  onClick={() => buy(p)}
+                                >
+                                  {busy === p.id ? '处理中…' : stock.inStock ? '立即开通' : '暂时缺货'}
+                                </button>
+                                <div
+                                  className="silk"
+                                  style={{
+                                    marginTop: 5,
+                                    color: stock.inStock
+                                      ? low
+                                        ? 'var(--warn)'
+                                        : 'var(--ok)'
+                                      : 'var(--muted)',
+                                  }}
+                                >
+                                  {stock.label}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {active.plans
+                .filter((p) => p.isCustom && p.custom)
+                .map((p) => (
+                  <div key={p.id} className="custom-card">
+                    <div className="custom-head">
+                      <div>
+                        <h3 className="title" style={{ fontSize: 17 }}>{p.name}</h3>
+                        <div className="hint">
+                          {p.description || '现成的档位都不合适？自己选核心、内存和硬盘。'}
                         </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                      </div>
+                      <span className="badge" data-tone="info">自定义</span>
+                    </div>
+                    {p.availability.inStock ? (
+                      <CustomBuilder
+                        offer={p.custom!}
+                        currency={currency}
+                        busy={busy === p.id}
+                        onBuy={(spec) => buy(p, spec)}
+                      />
+                    ) : (
+                      <div style={{ padding: '0 18px 18px' }}>
+                        <Notice tone="warn">暂时无法开通：{p.availability.label}</Notice>
+                      </div>
+                    )}
+                  </div>
+                ))}
+            </div>
           </div>
         </Unit>
       )}
-
       {/* ---------- 你买到的是什么 ---------- */}
       {plans && plans.length > 0 && (
         <Unit>

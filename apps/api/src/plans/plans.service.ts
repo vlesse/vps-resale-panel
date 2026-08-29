@@ -94,7 +94,9 @@ export class PlansService {
       // 选购页按这个分栏。没填分类的老套餐归到「其它」，不会消失。
       categoryKey: plan.categoryKey ?? 'other',
       categoryLabel: plan.categoryLabel ?? '其它',
-      categorySort: plan.categorySort ?? 999,
+      // 没分类的一律排最后。categorySort 有数据库默认值 0，
+      // 直接用它会让「其它」窜到第一栏 —— 新用户一进来看到的就是没归类的杂项。
+      categorySort: plan.categoryKey ? plan.categorySort : 999,
       isCustom: plan.isCustom,
       // 自定义档：把可选范围和价格系数一起给前端，让它能实时算价。
       // 这些系数就是卖价，不是你的成本，可以放心暴露。
