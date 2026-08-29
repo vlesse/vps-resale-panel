@@ -56,7 +56,7 @@ export function Nav() {
           RENRENYINGS
         </Link>
 
-        <nav className="navlinks">
+        <nav className="navlinks navlinks--main">
           {link('/', '选购')}
           {me && link('/dashboard', '我的机器')}
           {me && link('/orders', '订单')}
@@ -65,7 +65,7 @@ export function Nav() {
 
         <span className="spacer" />
 
-        <div className="navlinks" style={{ minWidth: loaded ? undefined : 120 }}>
+        <div className="navlinks navlinks--user" style={{ minWidth: loaded ? undefined : 120 }}>
           {!loaded ? null : me ? (
             <>
               <Link href="/profile" className="navlink" title={me.email}>

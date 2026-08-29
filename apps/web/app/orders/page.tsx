@@ -53,7 +53,7 @@ export default function Orders() {
           )}
           {rows && rows.length > 0 && (
             <div className="tablewrap">
-              <table className="table">
+              <table className="table table--cards">
                 <thead>
                   <tr>
                     <th>订单号</th>
@@ -73,13 +73,13 @@ export default function Orders() {
                         {o.planName}
                         {o.kind === 'renew' && <span className="badge" style={{ marginLeft: 6 }}>续费</span>}
                       </td>
-                      <td>{o.cycleLabel}</td>
-                      <td className="num r">{money(o.amountCents, o.currency)}</td>
+                      <td data-label="周期">{o.cycleLabel}</td>
+                      <td className="num r" data-label="金额">{money(o.amountCents, o.currency)}</td>
                       <td>
                         <span className="badge" data-tone={TONE[o.status] ?? 'mute'}>{o.statusLabel}</span>
                       </td>
-                      <td className="num" style={{ fontSize: 11.5 }}>{formatDate(o.createdAt)}</td>
-                      <td>
+                      <td className="num" data-label="下单时间" style={{ fontSize: 11.5 }}>{formatDate(o.createdAt)}</td>
+                      <td data-role="action">
                         {o.status === 'pending_payment' ? (
                           <Link href={`/pay/${o.orderNo}`} className="btn btn--sm btn--key">去付款</Link>
                         ) : (

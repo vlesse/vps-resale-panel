@@ -217,7 +217,7 @@ export default function Home() {
           </div>
 
           <div className="tablewrap">
-            <table className="table plans">
+            <table className="table plans table--cards">
               <thead>
                 <tr>
                   <th>机型</th>
@@ -240,15 +240,18 @@ export default function Home() {
                         <div className="plan-name">{p.name}</div>
                         <div className="plan-region">{p.regionLabel}</div>
                       </td>
-                      <td className="num data r">{p.cpu}</td>
-                      <td className="num data r">{gb(p.memoryMb)}</td>
-                      <td className="num data r">{p.diskGb} GB</td>
-                      <td className="num data r">{traffic(p.trafficGb)}</td>
-                      <td className="num r">
-                        <span className="plan-price">{price ? money(price.priceCents, currency) : '—'}</span>
-                        <span className="plan-cyc"> /月</span>
+                      <td className="num data r" data-label="vCPU">{p.cpu}</td>
+                      <td className="num data r" data-label="内存">{gb(p.memoryMb)}</td>
+                      <td className="num data r" data-label="硬盘">{p.diskGb} GB</td>
+                      <td className="num data r" data-label="月流量">{traffic(p.trafficGb)}</td>
+                      <td className="num r" data-label="价格">
+                        {/* 包一层，窄屏上两端对齐时价格和「/月」才不会被拆到两头 */}
+                        <span>
+                          <span className="plan-price">{price ? money(price.priceCents, currency) : '—'}</span>
+                          <span className="plan-cyc"> /月</span>
+                        </span>
                       </td>
-                      <td className="num r" style={{ whiteSpace: 'nowrap' }}>
+                      <td className="num r" data-role="action" style={{ whiteSpace: 'nowrap' }}>
                         <button
                           type="button"
                           className="btn btn--sm btn--key"

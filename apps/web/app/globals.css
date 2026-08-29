@@ -812,6 +812,73 @@ h1.title {
   background: rgba(255, 253, 254, 0.5);
 }
 
+/* ---- 窄屏上把表格拆成一张张卡片 ----
+
+   面向客户的表格（机型价格、我的订单）在手机上横向滚动是致命的：
+   价格和「立即开通」都被推到屏幕外，买家看得到配置却看不到多少钱、
+   也点不到下单，而没几个人会想到去横拖一个表格。
+   所以在窄屏上整行重排成卡片，每个字段自带标签。
+
+   后台那些表格不加这个 —— 那是坐在电脑前用的。 */
+@media (max-width: 760px) {
+  .table--cards {
+    min-width: 0;
+  }
+  .table--cards thead {
+    display: none;
+  }
+  .table--cards,
+  .table--cards tbody,
+  .table--cards tr,
+  .table--cards td {
+    display: block;
+    width: 100%;
+  }
+  .table--cards tr {
+    padding: 16px 0;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .table--cards tr:last-child {
+    border-bottom: 0;
+  }
+  .table--cards td {
+    padding: 0;
+    border: 0;
+    text-align: left;
+  }
+  .table--cards tbody tr:hover td {
+    background: transparent;
+  }
+  /* 带标签的字段排成「标签 …… 值」一行 */
+  .table--cards td[data-label] {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 6px 0;
+  }
+  .table--cards td[data-label]::before {
+    content: attr(data-label);
+    flex: none;
+    font-family: var(--f-mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  /* 操作那一格整行铺满，按钮才好点 */
+  .table--cards td[data-role='action'] {
+    margin-top: 12px;
+  }
+  .table--cards td[data-role='action'] .btn {
+    width: 100%;
+  }
+  .table--cards td[data-role='action'] .silk {
+    display: block;
+    text-align: center;
+  }
+}
+
 /* ============================================================
    价格
    ============================================================ */
@@ -909,9 +976,8 @@ h1.title {
   padding: 12px 0;
   border-top: 1px solid var(--hairline);
 }
-.hero-list li:last-child {
-  border-bottom: 1px solid var(--hairline);
-}
+/* 最后一条不画下边线 —— 紧接着的统计区自己有上边线，
+   两条发丝线挨在一起看着像画重了 */
 .hero-list li > i {
   flex: none;
   width: 5px;
@@ -1146,12 +1212,33 @@ h1.title {
   .rack {
     padding: 20px 14px 56px;
   }
+  /* 顶栏在手机上一行放不下：品牌 + 三四个导航 + 用户名 + 退出，
+     挤在一起会把用户名压成竖排还溢出。改成两行 ——
+     第一行品牌和用户区，第二行导航，横向可滑。 */
   .navbar {
-    padding: 0 14px;
-    gap: 16px;
+    height: auto;
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 10px 14px 0;
+    gap: 10px 12px;
+  }
+  .navbar .spacer {
+    display: none;
   }
   .navlinks {
-    gap: 14px;
+    gap: 16px;
+  }
+  .navlinks--user {
+    margin-left: auto;
+  }
+  .navlinks--main {
+    order: 3;
+    flex: 1 0 100%;
+    overflow-x: auto;
+    padding-bottom: 8px;
+  }
+  .navlink {
+    white-space: nowrap;
   }
   .panelbody {
     padding: 18px 16px;
