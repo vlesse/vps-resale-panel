@@ -23,6 +23,7 @@ class CreateGatewayDto {
   @IsInt() @Min(1024) @Max(65535) portStart: number;
   @IsInt() @Min(1024) @Max(65535) portEnd: number;
   @IsOptional() @IsInt() @Min(1) @Max(1000) portsPerMachine?: number;
+  @IsOptional() @IsString() @Length(0, 128) webDomain?: string;
 }
 
 class UpdateGatewayDto {
@@ -37,6 +38,7 @@ class UpdateGatewayDto {
   @IsOptional() @IsInt() @Min(1024) @Max(65535) portStart?: number;
   @IsOptional() @IsInt() @Min(1024) @Max(65535) portEnd?: number;
   @IsOptional() @IsInt() @Min(1) @Max(1000) portsPerMachine?: number;
+  @IsOptional() @IsString() @Length(0, 128) webDomain?: string;
   @IsOptional() @IsBoolean() enabled?: boolean;
 }
 

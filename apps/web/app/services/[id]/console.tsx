@@ -433,6 +433,20 @@ export function Console({ id }: { id: string }) {
                     <Readout label="你的公网端口段" value={`${d.nat.portStart}–${d.nat.portEnd}`} />
                     <Readout label="机器内网地址" value={d.nat.internalIp} />
                   </div>
+                  {d.nat.webHost && (
+                    <div className="well" style={{ marginTop: 14 }}>
+                      <div className="ro-k">送你的网址</div>
+                      <div className="ro-v" style={{ fontSize: 15, marginTop: 4 }}>
+                        https://{d.nat.webHost}
+                      </div>
+                      <div className="hint" style={{ marginTop: 8 }}>
+                        它指向这台机器的 <b>80 端口</b>，HTTPS 证书我们已经配好，你什么都不用装。
+                        在机器上跑起任何监听 80 的网站，用这个网址就能打开 ——
+                        不用自己买域名，也不用配证书。想用自己的域名，把它 CNAME 到这里就行。
+                      </div>
+                    </div>
+                  )}
+
                   <div className="hint" style={{ marginTop: 12 }}>
                     端口段里第一个端口（{d.sshPort}）固定通到机器的 22，其余
                     {' '}

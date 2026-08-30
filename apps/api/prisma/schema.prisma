@@ -582,6 +582,11 @@ model NatGateway {
   /// 每台机器分几个端口。第一个固定映射到机器的 22。
   portsPerMachine Int @default(20) @map("ports_per_machine")
 
+  /// 送二级域名用的根域，比如 nat.renrenyings.net。
+  /// 填了的话每台机器会拿到 m<SSH端口>.<这个域名>，由网关上的 Nginx
+  /// 反代到机器的 80。留空就是不送域名，只给端口。
+  webDomain String? @map("web_domain") @db.VarChar(128)
+
   enabled    Boolean   @default(true)
   lastSyncAt DateTime? @map("last_sync_at")
   lastError  String?   @map("last_error") @db.VarChar(500)

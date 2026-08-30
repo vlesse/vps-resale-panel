@@ -331,6 +331,7 @@ export class ProvisioningService {
               internalIp: nat.internalIp,
               portStart: nat.portStart,
               portEnd: nat.portEnd,
+              webHost: nat.webHost,
             },
           }
         : {}),

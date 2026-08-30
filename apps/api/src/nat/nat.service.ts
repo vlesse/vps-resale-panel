@@ -27,6 +27,8 @@ export interface NatEndpoint {
   portStart: number;
   portEnd: number;
   internalIp: string;
+  /** 送给这台机器的二级域名，指向它的 80。网关没配 webDomain 时是 null。 */
+  webHost: string | null;
 }
 
 export interface GatewayInput {
@@ -41,12 +43,19 @@ export interface GatewayInput {
   portStart: number;
   portEnd: number;
   portsPerMachine?: number;
+  webDomain?: string | null;
 }
 
 const CHAIN_NAT = 'PANEL-NAT';
 const CHAIN_FWD = 'PANEL-FWD';
 const SCRIPT_PATH = '/usr/local/sbin/panel-nat.sh';
 const UNIT_PATH = '/etc/systemd/system/panel-nat.service';
+/**
+ * 网关 Nginx 里 include 的那个映射文件。面板**只**写这一个文件，
+ * 站点配置本身是人工装好的 —— 让程序去改别人生产环境的 Nginx 主配置，
+ * 写错一次整台机器上的网站全下线。
+ */
+const NGINX_MAP_PATH = '/etc/nginx/vps-panel-nat.map';
 
 @Injectable()
 export class NatService {
@@ -93,6 +102,7 @@ export class NatService {
         sshPort: b.sshPort,
         portStart: b.portStart,
         portEnd: b.portEnd,
+        webHost: webHostFor(gw.webDomain, b.sshPort),
       })),
     };
   }
@@ -111,6 +121,7 @@ export class NatService {
         portStart: dto.portStart,
         portEnd: dto.portEnd,
         portsPerMachine: dto.portsPerMachine ?? 20,
+        webDomain: normalizeDomain(dto.webDomain),
       },
     });
     return this.toPublic(gw, 0);
@@ -159,6 +170,7 @@ export class NatService {
         portEnd: dto.portEnd,
         portsPerMachine: dto.portsPerMachine,
         enabled: dto.enabled,
+        ...(dto.webDomain === undefined ? {} : { webDomain: normalizeDomain(dto.webDomain) }),
         // 没填就是「别动原来的密码」，不是「清空密码」
         ...(auth ? { authPayloadEncrypted: auth } : {}),
       },
@@ -251,6 +263,7 @@ export class NatService {
       portStart: b.portStart,
       portEnd: b.portEnd,
       internalIp: ip,
+      webHost: webHostFor(gw.webDomain, b.sshPort),
     };
   }
 
@@ -278,11 +291,24 @@ export class NatService {
 
     try {
       await this.runScript(gw, this.renderScript(gw, rows));
+
+      // 二级域名的映射单独推。它失败不该把端口映射一起判死 ——
+      // 端口已经生效了，机器是能用的，只是域名暂时不通。
+      let webWarning: string | null = null;
+      if (gw.webDomain) {
+        try {
+          await this.pushNginxMap(gw, rows);
+        } catch (e) {
+          webWarning = e instanceof Error ? e.message : String(e);
+          this.logger.warn(`网关 ${gw.name} 的二级域名映射没推上去：${webWarning}`);
+        }
+      }
+
       await this.prisma.natGateway.update({
         where: { id: gw.id },
-        data: { lastSyncAt: new Date(), lastError: null },
+        data: { lastSyncAt: new Date(), lastError: webWarning },
       });
-      return { ok: true, rules: rows.length, syncedAt: new Date() };
+      return { ok: true, rules: rows.length, webWarning, syncedAt: new Date() };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       await this.prisma.natGateway.update({
@@ -352,6 +378,47 @@ export class NatService {
     }
     L.push('exit 0');
     return L.join('\n') + '\n';
+  }
+
+  /**
+   * 把二级域名 → 机器内网地址的映射推到网关的 Nginx 上。
+   *
+   * 只写一个被 include 的映射文件，站点配置本身不碰 —— 那台机器上往往
+   * 还跑着别人的网站，程序去改主配置写错一次就是全站下线。
+   * 推完先 `nginx -t`，过不了就原样退回去，绝不 reload 一个坏配置。
+   */
+  private async pushNginxMap(
+    gw: NatGateway,
+    rows: { ip: string; code: string; sshPort: number }[],
+  ) {
+    const lines = [
+      '# 这个文件由 VPS 面板自动生成，手工改动会在下次下发时被覆盖。',
+      ...rows.map((r) => `${webHostFor(gw.webDomain, r.sshPort)} ${r.ip}:80;  # ${r.code}`),
+      '',
+    ].join('\n');
+
+    const b64 = Buffer.from(lines, 'utf8').toString('base64');
+    const cmd = [
+      `cp ${NGINX_MAP_PATH} ${NGINX_MAP_PATH}.bak 2>/dev/null || true`,
+      `echo ${b64} | base64 -d > ${NGINX_MAP_PATH}`,
+      // 配置过不了就回滚，然后以非零退出，让上层知道域名这块没生效
+      `if nginx -t 2>/dev/null; then nginx -s reload; else ` +
+        `cp ${NGINX_MAP_PATH}.bak ${NGINX_MAP_PATH} 2>/dev/null; ` +
+        `echo "nginx -t 没过，映射已回滚"; nginx -t; exit 1; fi`,
+    ].join(' && ');
+
+    const auth = this.unpackAuth(gw);
+    const res = await sshExec(
+      { host: gw.sshHost, auth: { sshUser: gw.sshUser, sshPort: gw.sshPort, ...auth } },
+      cmd,
+      30000,
+    );
+    if (res.code !== 0) {
+      throw new BadRequestException(
+        (res.stderr || res.stdout || '没有输出').trim().slice(0, 300) +
+          `。网关上要先装好 *.${gw.webDomain} 的站点配置，见文档第 10 章。`,
+      );
+    }
   }
 
   /**
@@ -468,6 +535,12 @@ export class NatService {
     if (portEnd - portStart + 1 < per) {
       throw new BadRequestException('端口区间比每台机器要分的端口数还小，一台都放不下');
     }
+    const d = normalizeDomain(dto.webDomain);
+    if (d && !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(d)) {
+      throw new BadRequestException(
+        `二级域名根域写得不对：${dto.webDomain}。填 nat.example.com 这样的形式，不要带 * 和 http://`,
+      );
+    }
   }
 
   private packAuth(dto: { password?: string; privateKey?: string }): string | undefined {
@@ -503,6 +576,7 @@ export class NatService {
       portStart: gw.portStart,
       portEnd: gw.portEnd,
       portsPerMachine: gw.portsPerMachine,
+      webDomain: gw.webDomain,
       capacity: this.capacityOf(gw),
       used: bindingCount,
       enabled: gw.enabled,
@@ -510,4 +584,18 @@ export class NatService {
       lastError: gw.lastError,
     };
   }
+}
+
+/**
+ * 机器的二级域名。用它分到的 SSH 端口做标签 —— 短、唯一，
+ * 而且这个数字买家本来就要记，不用再多记一个。
+ */
+function webHostFor(domain: string | null | undefined, sshPort: number): string | null {
+  return domain ? `m${sshPort}.${domain}` : null;
+}
+
+function normalizeDomain(d?: string | null): string | null {
+  if (d == null) return null;
+  const v = d.trim().toLowerCase().replace(/^\*\./, '').replace(/\.$/, '');
+  return v || null;
 }

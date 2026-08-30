@@ -228,7 +228,7 @@ export interface ServiceDetail extends ServiceItem {
     osTemplate?: string;
     region?: string;
     /** NAT 机器才有：机器自己在私网里的地址，以及分到的公网端口段 */
-    nat?: { internalIp: string; portStart: number; portEnd: number };
+    nat?: { internalIp: string; portStart: number; portEnd: number; webHost?: string | null };
   } | null;
   liveStatus: LiveStatus | null;
   /** 实时探测失败时的原因。读数会退回上一次采集到的值，页面照常能用。 */

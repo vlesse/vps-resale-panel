@@ -16,6 +16,7 @@ interface Gateway {
   portStart: number;
   portEnd: number;
   portsPerMachine: number;
+  webDomain: string | null;
   capacity: number;
   used: number;
   enabled: boolean;
@@ -30,6 +31,7 @@ interface Binding {
   sshPort: number;
   portStart: number;
   portEnd: number;
+  webHost: string | null;
 }
 
 const BLANK = {
@@ -44,6 +46,7 @@ const BLANK = {
   portStart: '20000',
   portEnd: '39999',
   portsPerMachine: '20',
+  webDomain: '',
 };
 
 export default function NatGateways() {
@@ -82,6 +85,7 @@ export default function NatGateways() {
       portStart: String(g.portStart),
       portEnd: String(g.portEnd),
       portsPerMachine: String(g.portsPerMachine),
+      webDomain: g.webDomain ?? '',
     });
     if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -105,6 +109,7 @@ export default function NatGateways() {
       portStart: Number(form.portStart),
       portEnd: Number(form.portEnd),
       portsPerMachine: Number(form.portsPerMachine),
+      webDomain: form.webDomain.trim(),
     };
     if (form.password.trim()) body.password = form.password;
     if (form.privateKey.trim()) body.privateKey = form.privateKey;
@@ -264,6 +269,14 @@ export default function NatGateways() {
                 <input className="input" type="number" {...f('portsPerMachine')} />
                 <span className="hint">第一个固定映射到机器的 22，其余原样转发</span>
               </div>
+              <div className="field">
+                <label className="label">二级域名根域（选填）</label>
+                <input className="input" placeholder="nat.example.com" {...f('webDomain')} />
+                <span className="hint">
+                  填了每台机器会拿到 m&lt;SSH端口&gt;.这个域名，指向它的 80。
+                  网关上要先装好泛域名站点和证书，见文档第 10 章。
+                </span>
+              </div>
             </div>
 
             <div className="field" style={{ maxWidth: 780 }}>
@@ -320,6 +333,7 @@ export default function NatGateways() {
                 </div>
                 <div className="num" style={{ fontSize: 12, marginTop: 4 }}>
                   {g.publicHost} · {g.subnet} · 端口 {g.portStart}–{g.portEnd}
+                  {g.webDomain ? ` · *.${g.webDomain}` : ''}
                 </div>
               </div>
               <div className="btnrow">
@@ -378,6 +392,7 @@ export default function NatGateways() {
                         <th>私网地址</th>
                         <th className="r">SSH 端口</th>
                         <th className="r">端口段</th>
+                        <th>二级域名</th>
                         <th>状态</th>
                       </tr>
                     </thead>
@@ -390,6 +405,7 @@ export default function NatGateways() {
                           <td data-label="端口段" className="num r">
                             {b.portStart}–{b.portEnd}
                           </td>
+                          <td data-label="二级域名" className="num">{b.webHost ?? '—'}</td>
                           <td data-label="状态">{b.machineStatus}</td>
                         </tr>
                       ))}

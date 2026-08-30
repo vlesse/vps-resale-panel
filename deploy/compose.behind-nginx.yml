@@ -1,0 +1,45 @@
+# ============================================================
+#  已经有 Nginx 的服务器上怎么装
+#
+#  默认部署里 Caddy 自己占着 80 和 443，自动申请证书。但你那台机器上
+#  可能已经跑着别的网站，80/443 被 Nginx 占着 —— 这时候不能让 Caddy 上，
+#  两个东西抢同一个端口，先起来的赢，后起来的静默失败。
+#
+#  这个覆盖文件做三件事：
+#    1. 关掉 Caddy，证书还是交给你原来的 certbot 管
+#    2. 数据库和 Redis 不再往宿主机映射端口（原来那台上多半已经有了，会撞）
+#    3. 前端和后端各绑一个只有本机能连的高位端口，让 Nginx 转过去
+#
+#  用法：
+#     docker compose -f docker-compose.yml -f deploy/compose.behind-nginx.yml up -d
+#
+#  然后在 Nginx 里加一段（vps.renrenyings.net 换成你自己的域名）：
+#
+#     location /api/      { proxy_pass http://127.0.0.1:3110; ... }
+#     location /payments/ { proxy_pass http://127.0.0.1:3110; ... }
+#     location /          { proxy_pass http://127.0.0.1:3111; ... }
+#
+#  完整的 Nginx 片段见同目录的 nginx-panel.conf。
+# ============================================================
+
+services:
+  mysql:
+    # 宿主机上大概率已经有一个 MySQL 或 MariaDB 占着 3306。
+    # 容器之间走 compose 内部网络，本来也不需要往外映射。
+    ports: !override []
+
+  redis:
+    ports: !override []
+
+  api:
+    ports:
+      - '127.0.0.1:3110:3000'
+
+  web:
+    ports:
+      - '127.0.0.1:3111:3000'
+
+  caddy:
+    # 不能只是「不启动」—— compose up 会把它拉起来。
+    # 挂到一个用不到的 profile 上，不显式指定就永远不会启动。
+    profiles: ['unused']
