@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { api, formatDate } from '@/lib/api';
+import { api, formatDate, money } from '@/lib/api';
 import { Notice, PanelBar, Unit } from '@/components/ui';
 
 export default function AdminUsers() {
@@ -70,6 +70,7 @@ export default function AdminUsers() {
                   <th className="num r">订单</th>
                   <th className="num r">机器</th>
                   <th className="num r">机器上限</th>
+                  <th className="num r">余额</th>
                   <th>最近登录</th>
                   <th>操作</th>
                 </tr>
@@ -92,6 +93,7 @@ export default function AdminUsers() {
                     <td className="num r">{u.orderCount}</td>
                     <td className="num r">{u.serviceCount}</td>
                     <td className="num r">{u.maxActiveServices || '默认'}</td>
+                    <td className="num r">{money(u.balanceCents ?? 0, 'CNY')}</td>
                     <td className="num" style={{ fontSize: 11.5 }}>{formatDate(u.lastLoginAt)}</td>
                     <td>
                       <div className="btnrow">
@@ -114,6 +116,35 @@ export default function AdminUsers() {
                           }}
                         >
                           改上限
+                        </button>
+                        <button
+                          className="btn btn--sm"
+                          onClick={async () => {
+                            const n = window.prompt(
+                              `给 ${u.email} 加多少钱？单位「元」，可以填负数表示扣。
+` +
+                                `当前余额 ${((u.balanceCents ?? 0) / 100).toFixed(2)}`,
+                              '0',
+                            );
+                            if (n === null || !Number(n)) return;
+                            const why = window.prompt('原因（会记进流水，事后对账全靠这一行）', '');
+                            if (!why) {
+                              setFlash({ tone: 'crit', text: '没写原因，已取消' });
+                              return;
+                            }
+                            try {
+                              await api.post(`/api/admin/wallet/users/${u.id}/adjust`, {
+                                amountCents: Math.round(Number(n) * 100),
+                                remark: why,
+                              });
+                              setFlash({ tone: 'ok', text: '余额已调整' });
+                            } catch (e: any) {
+                              setFlash({ tone: 'crit', text: e.message });
+                            }
+                            load();
+                          }}
+                        >
+                          调余额
                         </button>
                       </div>
                     </td>

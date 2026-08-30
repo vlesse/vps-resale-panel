@@ -15,6 +15,7 @@ import { OrdersModule } from './orders/orders.module';
 import { PaymentsModule } from './payments/payments.module';
 import { MachinesModule } from './machines/machines.module';
 import { NatModule } from './nat/nat.module';
+import { WalletModule } from './wallet/wallet.module';
 import { JwtAuthGuard } from './auth/auth.decorators';
 import { HealthController } from './health/health.controller';
 
@@ -49,6 +50,7 @@ import { HealthController } from './health/health.controller';
     PaymentsModule,
     MachinesModule,
     NatModule,
+    WalletModule,
   ],
   controllers: [HealthController],
   providers: [

@@ -250,6 +250,7 @@ export class AuthService implements OnModuleInit {
     role: UserRole;
     status: UserStatus;
     maxActiveServices: number;
+    balanceCents?: number;
     lastLoginAt: Date | null;
     createdAt: Date;
   }) {
@@ -261,6 +262,7 @@ export class AuthService implements OnModuleInit {
       role: u.role,
       status: u.status,
       maxActiveServices: u.maxActiveServices,
+      balanceCents: u.balanceCents ?? 0,
       lastLoginAt: u.lastLoginAt,
       createdAt: u.createdAt,
     };

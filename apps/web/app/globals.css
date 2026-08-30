@@ -1434,3 +1434,18 @@ h1.title {
     animation-duration: 2s;
   }
 }
+
+
+/* 付款指引：二维码和文字并排，窄屏叠起来 */
+.pay-usdt {
+  display: flex;
+  gap: 22px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+@media (max-width: 560px) {
+  .pay-usdt {
+    /* 二维码在窄屏上要居中，靠左会显得像没排版 */
+    justify-content: center;
+  }
+}

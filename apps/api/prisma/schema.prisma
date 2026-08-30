@@ -153,9 +153,19 @@ model User {
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
 
+  /// 账户余额，单位分，币种见 WALLET_CURRENCY（默认人民币）。
+  ///
+  /// 这里存的是**快照**，真相在 wallet_txs 那张流水表里 ——
+  /// 任何一次加减都必须同时写一条流水，对不上就是有 bug。
+  /// 单独放一个字段是为了下单时能用一条带条件的 UPDATE 原子扣款，
+  /// 不然并发下单会把余额扣成负数。
+  balanceCents Int @default(0) @map("balance_cents")
+
   orders   Order[]
   services Service[]
   logs     OperationLog[]
+  walletTxs      WalletTx[]
+  rechargeOrders RechargeOrder[]
 
   @@map("users")
 }
@@ -618,4 +628,138 @@ model NatBinding {
 
   @@unique([gatewayId, portStart])
   @@map("nat_bindings")
+}
+
+
+// ---------- 余额 ----------
+
+enum WalletTxType {
+  recharge // 充值到账
+  consume // 下单扣款
+  refund // 退回
+  adjust // 管理员手工调整
+}
+
+enum RechargeStatus {
+  pending_payment
+  paid
+  cancelled
+  expired
+}
+
+/**
+ * 余额流水。**只增不改不删**。
+ *
+ * 每一条都记着「这笔之后余额是多少」，所以任何时候都能拿最后一条
+ * 跟 users.balance_cents 对一下 —— 对不上就说明有代码绕过了流水直接改余额，
+ * 那是必须当场修的 bug。钱的事情不能只留一个当前值。
+ */
+model WalletTx {
+  id     BigInt       @id @default(autoincrement())
+  userId BigInt       @map("user_id")
+  type   WalletTxType
+
+  /// 正数入账，负数出账。单位分。
+  amountCents Int @map("amount_cents")
+
+  /// 这笔记账之后的余额，对账用
+  balanceAfterCents Int @map("balance_after_cents")
+
+  currency CurrencyCode @default(CNY)
+
+  /// 关联单据：order / recharge / admin
+  refType String? @map("ref_type") @db.VarChar(16)
+  refNo   String? @map("ref_no") @db.VarChar(64)
+
+  remark    String?  @db.VarChar(255)
+  /// 管理员手工调整时记是谁调的
+  operatorId BigInt? @map("operator_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, id])
+  @@index([createdAt])
+  @@map("wallet_txs")
+}
+
+/**
+ * 充值单。
+ *
+ * 没有复用 orders 表：那张表上 plan_id / plan_price_id 都是必填的，
+ * 为了充值把它们改成可空，会让「订单一定对应一个套餐」这个到处都在依赖的
+ * 前提失效，得不偿失。充值单自己带支付字段，不用 payments 表。
+ */
+model RechargeOrder {
+  id         BigInt @id @default(autoincrement())
+  rechargeNo String @unique @map("recharge_no") @db.VarChar(64)
+  userId     BigInt @map("user_id")
+
+  amountCents Int          @map("amount_cents")
+  currency    CurrencyCode @default(CNY)
+
+  status RechargeStatus @default(pending_payment)
+
+  payChannel String?   @map("pay_channel") @db.VarChar(32)
+  upstreamNo String?   @map("upstream_no") @db.VarChar(64)
+  rawNotifyJson Json?  @map("raw_notify_json")
+  paidAt     DateTime? @map("paid_at")
+  expiresAt  DateTime? @map("expires_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, status])
+  @@index([status, createdAt])
+  @@map("recharge_orders")
+}
+
+// ---------- USDT 收款 ----------
+
+enum UsdtIntentStatus {
+  pending
+  paid
+  expired
+}
+
+/**
+ * 一笔等待中的 USDT 转账。
+ *
+ * 链上收款没有「商户订单号」这种东西 —— 转过来的就是一笔金额，
+ * 没有任何字段能带上是谁转的。所以靠**金额唯一**来配对：
+ * 给每笔待付款分配一个别人此刻没在用的精确金额（小数点后随机几位），
+ * 看到链上有一笔正好这个数的转入，就认定是它。
+ *
+ * 这就要求同一个收款地址上，同一时刻不能有两笔待付款金额相同。
+ */
+model UsdtIntent {
+  id       BigInt @id @default(autoincrement())
+  intentNo String @unique @map("intent_no") @db.VarChar(64)
+
+  /// order 或 recharge
+  refType String @map("ref_type") @db.VarChar(16)
+  refNo   String @map("ref_no") @db.VarChar(64)
+
+  channelCode String @map("channel_code") @db.VarChar(48)
+  address     String @db.VarChar(64)
+
+  /// 要求转账的精确金额，单位是 USDT 的最小单位（1 USDT = 1000000）
+  amountUnits BigInt @map("amount_units")
+
+  /// 这笔订单原本的价钱，退款和对账时要看
+  sourceAmountCents Int          @map("source_amount_cents")
+  sourceCurrency    CurrencyCode @map("source_currency")
+
+  status UsdtIntentStatus @default(pending)
+
+  txId      String?   @map("tx_id") @db.VarChar(80)
+  paidAt    DateTime? @map("paid_at")
+  expiresAt DateTime  @map("expires_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@index([status, expiresAt])
+  @@index([address, status])
+  @@map("usdt_intents")
 }

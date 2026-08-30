@@ -1,10 +1,14 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { OrderStatus } from '@prisma/client';
+import { Cron, CronExpression } from '@nestjs/schedule';
+import { OrderStatus, RechargeStatus, UsdtIntentStatus, WalletTxType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { OrdersService } from '../orders/orders.service';
-import { decryptJson, encryptJson, tryDecryptJson } from '../crypto/crypto.util';
+import { WalletService } from '../wallet/wallet.service';
+import { decryptJson, encryptJson, generateCode, tryDecryptJson } from '../crypto/crypto.util';
 import { JeepayCredentials, JeepayDriver } from './drivers/jeepay.driver';
+import { EpayCredentials, EpayDriver } from './drivers/epay.driver';
+import { UsdtCredentials, UsdtDriver } from './drivers/usdt.driver';
 import { AuthedUser } from '../auth/auth.decorators';
 
 /**
@@ -13,12 +17,29 @@ import { AuthedUser } from '../auth/auth.decorators';
  * 通道配置放数据库不放 .env，因为运营过程中换支付商是常事，
  * 改 .env 要重启服务，改数据库不用。商户密钥同样加密存储。
  *
- * 目前内置两种驱动：
- *   jeepay  聚合支付网关，对接扫码/网银/信用卡等
- *   manual  线下转账，用户提交后管理员在后台手工确认
+ * 内置五种驱动：
+ *   jeepay      自建的聚合支付网关
+ *   epay        易支付规范（国内大量服务商共用这套接口）
+ *   usdt_trc20  链上收 USDT，靠金额唯一配对，不需要任何商户账号
+ *   balance     用账户余额付，不出网
+ *   manual      线下转账，管理员在后台手工确认
  *
- * 要接第三种，实现一个有 createPayment 和 parseNotify 的类，在 dispatch 里加一支即可。
+ * 两类单据共用这一层：**套餐订单**（ORD 开头）和**充值单**（RCH 开头）。
+ * 单号前缀决定钱到账后往哪走 —— 订单去建机，充值去加余额。
  */
+
+/** 付款目标：套餐订单和充值单在支付这一层长得一样，这里抹平差异 */
+interface PayTarget {
+  kind: 'order' | 'recharge';
+  no: string;
+  userId: bigint;
+  amountCents: number;
+  currency: string;
+  subject: string;
+  body: string;
+  expiresAt: Date | null;
+}
+
 @Injectable()
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
@@ -26,7 +47,10 @@ export class PaymentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly orders: OrdersService,
+    private readonly wallet: WalletService,
     private readonly jeepay: JeepayDriver,
+    private readonly epay: EpayDriver,
+    private readonly usdt: UsdtDriver,
     private readonly config: ConfigService,
   ) {}
 
@@ -47,6 +71,10 @@ export class PaymentsService {
     return u.replace(/\/+$/, '');
   }
 
+  private siteName(): string {
+    return this.config.get<string>('SITE_NAME') ?? 'VPS 面板';
+  }
+
   // ---------- 结算页 ----------
 
   /** 结算页展示的支付方式。不带任何密钥。 */
@@ -62,6 +90,8 @@ export class PaymentsService {
       driver: c.driver,
       settleCurrency: c.settleCurrency,
       desc: c.descText,
+      // 充值单不能用余额付（拿余额充余额没有意义），前端据此隐藏
+      usableForRecharge: c.driver !== 'balance',
     }));
   }
 
@@ -72,8 +102,7 @@ export class PaymentsService {
       where: { orderNo },
       include: { plan: { select: { name: true, regionLabel: true } } },
     });
-    if (!order) throw new NotFoundException('订单不存在');
-    if (order.userId !== user.id) throw new NotFoundException('订单不存在');
+    if (!order || order.userId !== user.id) throw new NotFoundException('订单不存在');
 
     if (order.status !== OrderStatus.pending_payment) {
       throw new BadRequestException(
@@ -82,55 +111,403 @@ export class PaymentsService {
           : `订单当前状态是「${order.status}」，不能发起支付`,
       );
     }
-    if (order.expiresAt && order.expiresAt < new Date()) {
-      throw new BadRequestException('这笔订单已经超时了，请重新下单');
+    return this.start(
+      {
+        kind: 'order',
+        no: order.orderNo,
+        userId: order.userId,
+        amountCents: order.amountCents,
+        currency: order.currency,
+        subject: order.plan.name,
+        body: `${order.plan.regionLabel} · ${order.orderNo}`,
+        expiresAt: order.expiresAt,
+      },
+      channelCode,
+      clientIp,
+    );
+  }
+
+  async payRecharge(user: AuthedUser, rechargeNo: string, channelCode: string, clientIp?: string) {
+    const row = await this.prisma.rechargeOrder.findUnique({ where: { rechargeNo } });
+    if (!row || row.userId !== user.id) throw new NotFoundException('充值单不存在');
+    if (row.status !== RechargeStatus.pending_payment) {
+      throw new BadRequestException(
+        row.status === RechargeStatus.paid ? '这笔充值已经到账了' : `充值单状态是「${row.status}」`,
+      );
+    }
+    return this.start(
+      {
+        kind: 'recharge',
+        no: row.rechargeNo,
+        userId: row.userId,
+        amountCents: row.amountCents,
+        currency: row.currency,
+        subject: `账户充值 ${(row.amountCents / 100).toFixed(2)}`,
+        body: `充值 · ${row.rechargeNo}`,
+        expiresAt: row.expiresAt,
+      },
+      channelCode,
+      clientIp,
+    );
+  }
+
+  /** 两类单据共用的发起逻辑 */
+  private async start(target: PayTarget, channelCode: string, clientIp?: string) {
+    if (target.expiresAt && target.expiresAt < new Date()) {
+      throw new BadRequestException('这笔单子已经超时了，请重新发起');
     }
 
     const channel = await this.prisma.payChannel.findUnique({ where: { code: channelCode } });
     if (!channel || !channel.isEnabled) throw new BadRequestException('这个支付方式当前不可用');
 
-    if (channel.driver === 'manual') {
-      return {
-        kind: 'manual' as const,
-        message: '请按页面提示完成转账，转账后联系客服确认，管理员确认后会自动开通',
-        instructions: channel.descText,
-      };
+    const remember = () =>
+      target.kind === 'order'
+        ? this.prisma.order.update({
+            where: { orderNo: target.no },
+            data: { payChannel: channel.code },
+          })
+        : this.prisma.rechargeOrder.update({
+            where: { rechargeNo: target.no },
+            data: { payChannel: channel.code },
+          });
+
+    switch (channel.driver) {
+      case 'manual':
+        await remember();
+        return {
+          kind: 'manual' as const,
+          message: '请按页面提示完成转账，转账后联系客服确认，管理员确认后会自动开通',
+          instructions: channel.descText,
+        };
+
+      case 'balance':
+        return this.payFromBalance(target, channel.code);
+
+      case 'jeepay': {
+        await remember();
+        const cred = decryptJson<JeepayCredentials>(this.secret(), channel.credentialsEncrypted);
+        const result = await this.jeepay.createPayment(
+          { ...cred, gatewayUrl: channel.gatewayUrl || cred.gatewayUrl },
+          {
+            orderNo: target.no,
+            amountCents: this.convertAmount(target.amountCents, target.currency, channel),
+            currency: channel.settleCurrency || target.currency,
+            wayCode: channel.wayCode || '',
+            subject: target.subject,
+            body: target.body,
+            notifyUrl: `${this.baseUrl()}/api/payments/jeepay/notify`,
+            returnUrl: this.returnUrl(target),
+            clientIp,
+            rate: channel.rate ?? undefined,
+          },
+        );
+        return {
+          kind: 'gateway' as const,
+          codeUrl: result.codeUrl,
+          payUrl: result.payUrl,
+          upstreamNo: result.payOrderId,
+        };
+      }
+
+      case 'epay': {
+        await remember();
+        const cred = decryptJson<EpayCredentials>(this.secret(), channel.credentialsEncrypted);
+        const full = { ...cred, gatewayUrl: channel.gatewayUrl || cred.gatewayUrl };
+        const req = {
+          orderNo: target.no,
+          amountCents: this.convertAmount(target.amountCents, target.currency, channel),
+          payType: channel.wayCode || 'alipay',
+          subject: target.subject,
+          notifyUrl: `${this.baseUrl()}/api/payments/epay/notify`,
+          returnUrl: this.returnUrl(target),
+          clientIp,
+          siteName: this.siteName(),
+        };
+        try {
+          const r = await this.epay.createPayment(full, req);
+          return {
+            kind: 'gateway' as const,
+            codeUrl: r.qrCode,
+            payUrl: r.payUrl,
+            upstreamNo: r.tradeNo,
+          };
+        } catch (err: any) {
+          // 不少服务商没开 mapi.php，只提供 submit.php 的页面跳转。
+          // 这不是配置错误，退回跳转方式就能正常收款，没必要让用户看见报错。
+          this.logger.warn(`易支付 mapi 调用失败，改用页面跳转：${err.message}`);
+          return { kind: 'gateway' as const, payUrl: this.epay.buildSubmitUrl(full, req) };
+        }
+      }
+
+      case 'usdt_trc20':
+        await remember();
+        return this.startUsdt(target, channel);
+
+      default:
+        throw new BadRequestException(`不认识的支付驱动 ${channel.driver}`);
+    }
+  }
+
+  private returnUrl(target: PayTarget): string {
+    return target.kind === 'order'
+      ? `${this.baseUrl()}/pay/result?orderNo=${target.no}`
+      : `${this.baseUrl()}/wallet?recharge=${target.no}`;
+  }
+
+  // ---------- 余额支付 ----------
+
+  /**
+   * 用余额付一笔套餐订单。
+   *
+   * 扣款和「标记已付款」不在同一个事务里 —— markPaid 里面要入队建机，
+   * 把队列操作塞进数据库事务是自找麻烦。所以顺序是：先扣钱，再标记；
+   * 标记失败就把钱退回去，用户看到的是「没扣成」而不是「钱没了机器也没有」。
+   */
+  private async payFromBalance(target: PayTarget, channelCode: string) {
+    if (target.kind !== 'order') {
+      throw new BadRequestException('充值不能用余额付');
+    }
+    const walletCurrency = this.wallet.currency();
+    if (target.currency !== walletCurrency) {
+      const name = walletCurrency === 'CNY' ? '人民币' : '美元';
+      throw new BadRequestException(
+        `账户余额是${name}账户，这笔订单按 ${target.currency} 计价，用余额付会牵扯汇率换算。` +
+          `请把价格切回${name}重新下单，或者换个支付方式。`,
+      );
     }
 
-    if (channel.driver !== 'jeepay') {
-      throw new BadRequestException(`不认识的支付驱动 ${channel.driver}`);
-    }
-
-    const cred = decryptJson<JeepayCredentials>(this.secret(), channel.credentialsEncrypted);
-    const result = await this.jeepay.createPayment(
-      { ...cred, gatewayUrl: channel.gatewayUrl || cred.gatewayUrl },
-      {
-        orderNo: order.orderNo,
-        amountCents: this.convertAmount(order.amountCents, order.currency, channel),
-        currency: channel.settleCurrency || order.currency,
-        wayCode: channel.wayCode || '',
-        subject: `${order.plan.name}`,
-        body: `${order.plan.regionLabel} · ${order.orderNo}`,
-        // 回调地址必须公网可达，Jeepay 是从它自己的服务器发过来的
-        notifyUrl: `${this.baseUrl()}/api/payments/jeepay/notify`,
-        returnUrl: `${this.baseUrl()}/pay/result?orderNo=${order.orderNo}`,
-        clientIp,
-        rate: channel.rate ?? undefined,
-      },
-    );
-
-    await this.prisma.order.update({
-      where: { id: order.id },
-      data: { payChannel: channel.code },
+    await this.wallet.debit(target.userId, target.amountCents, {
+      type: WalletTxType.consume,
+      refType: 'order',
+      refNo: target.no,
+      remark: `购买 ${target.subject}`,
     });
 
+    try {
+      const r = await this.orders.markPaid(target.no, {
+        channel: channelCode,
+        amountCents: target.amountCents,
+        upstreamNo: `BALANCE-${target.no}`,
+      });
+      return { kind: 'paid' as const, message: r.message };
+    } catch (err: any) {
+      this.logger.error(`余额扣款后标记订单 ${target.no} 失败，正在退回：${err.message}`);
+      await this.wallet
+        .credit(target.userId, target.amountCents, {
+          type: WalletTxType.refund,
+          refType: 'order',
+          refNo: target.no,
+          remark: '扣款后下单失败，自动退回',
+        })
+        .catch((e) =>
+          // 退不回去是最坏的情况，必须吼出来让人工介入
+          this.logger.error(
+            `严重：订单 ${target.no} 扣了款但退不回去！用户 ${target.userId}，` +
+              `金额 ${target.amountCents} 分。错误：${e.message}`,
+          ),
+        );
+      throw new BadRequestException(`下单失败，已把款项退回余额：${err.message}`);
+    }
+  }
+
+  // ---------- USDT ----------
+
+  /**
+   * 发起一笔 USDT 收款。
+   *
+   * 同一张单重复发起会拿到**同一个金额** —— 用户刷新页面、切回来再看，
+   * 看到的必须是同一个数，不然他会以为要付两笔。
+   */
+  private async startUsdt(
+    target: PayTarget,
+    channel: { code: string; credentialsEncrypted: string; usdToCnyRate: number | null },
+  ) {
+    const cred = decryptJson<UsdtCredentials>(this.secret(), channel.credentialsEncrypted);
+    if (!this.usdt.isValidAddress(cred.address)) {
+      throw new BadRequestException('这个 USDT 通道的收款地址没配对，先去后台修好');
+    }
+
+    const now = new Date();
+    const exist = await this.prisma.usdtIntent.findFirst({
+      where: {
+        refType: target.kind,
+        refNo: target.no,
+        status: UsdtIntentStatus.pending,
+        expiresAt: { gt: now },
+      },
+      orderBy: { id: 'desc' },
+    });
+    if (exist) return this.usdtPayload(exist, cred.address);
+
+    const baseUnits = this.usdt.toUsdtUnits(
+      target.amountCents,
+      target.currency,
+      channel.usdToCnyRate,
+    );
+
+    // 占用中的金额必须查全 —— 漏掉一个，两张单就可能分到同一个金额，
+    // 那一笔转账会对上其中一张，另一张的用户等于白付。
+    const pending = await this.prisma.usdtIntent.findMany({
+      where: { address: cred.address, status: UsdtIntentStatus.pending, expiresAt: { gt: now } },
+      select: { amountUnits: true },
+    });
+    const taken = new Set(pending.map((p) => p.amountUnits.toString()));
+    const amountUnits = this.usdt.pickUniqueAmount(baseUnits, taken);
+
+    const minutes = Number(this.config.get('USDT_EXPIRE_MINUTES') ?? 30);
+    const intent = await this.prisma.usdtIntent.create({
+      data: {
+        intentNo: generateCode('UDT'),
+        refType: target.kind,
+        refNo: target.no,
+        channelCode: channel.code,
+        address: cred.address,
+        amountUnits,
+        sourceAmountCents: target.amountCents,
+        sourceCurrency: target.currency as any,
+        expiresAt: new Date(Date.now() + minutes * 60_000),
+      },
+    });
+    return this.usdtPayload(intent, cred.address);
+  }
+
+  private usdtPayload(
+    intent: { intentNo: string; amountUnits: bigint; expiresAt: Date },
+    address: string,
+  ) {
+    const amount = this.usdt.format(intent.amountUnits);
     return {
-      kind: 'gateway' as const,
-      codeUrl: result.codeUrl,
-      payUrl: result.payUrl,
-      upstreamNo: result.payOrderId,
+      kind: 'usdt' as const,
+      network: 'TRC20',
+      address,
+      amount,
+      /** 二维码内容。多数钱包认这个格式，认不了的用户手抄地址和金额也行。 */
+      qrPayload: `tron:${address}?amount=${amount}`,
+      intentNo: intent.intentNo,
+      expiresAt: intent.expiresAt,
+      notice:
+        '必须转这个精确金额，多一分少一分都对不上账 —— 系统靠金额认单。' +
+        '请务必走 TRC20（波场）网络，走错链的币找不回来。',
     };
   }
+
+  /** 前端轮询这个看付款到了没 */
+  async usdtStatus(user: AuthedUser, intentNo: string) {
+    const i = await this.prisma.usdtIntent.findUnique({ where: { intentNo } });
+    if (!i) throw new NotFoundException('这笔收款不存在');
+
+    // 只能查自己的单
+    const owner =
+      i.refType === 'recharge'
+        ? (await this.prisma.rechargeOrder.findUnique({ where: { rechargeNo: i.refNo } }))?.userId
+        : (await this.prisma.order.findUnique({ where: { orderNo: i.refNo } }))?.userId;
+    if (owner !== user.id) throw new NotFoundException('这笔收款不存在');
+
+    return {
+      intentNo: i.intentNo,
+      status: i.status,
+      amount: this.usdt.format(i.amountUnits),
+      address: i.address,
+      txId: i.txId,
+      paidAt: i.paidAt,
+      expiresAt: i.expiresAt,
+    };
+  }
+
+  /**
+   * 盯链。每分钟扫一次有待付款的收款地址。
+   *
+   * 只在真有人在等付款时才请求外部 API —— 没有待付款还去轮询，
+   * 一天几千次白白撞在 TronGrid 的限流上。
+   */
+  @Cron(CronExpression.EVERY_MINUTE)
+  async watchUsdt() {
+    const now = new Date();
+
+    // 过期的先清掉，把它们占着的金额释放出来
+    const expired = await this.prisma.usdtIntent.updateMany({
+      where: { status: UsdtIntentStatus.pending, expiresAt: { lte: now } },
+      data: { status: UsdtIntentStatus.expired },
+    });
+    if (expired.count) this.logger.log(`${expired.count} 笔 USDT 待付款超时，已释放`);
+
+    const pending = await this.prisma.usdtIntent.findMany({
+      where: { status: UsdtIntentStatus.pending, expiresAt: { gt: now } },
+      orderBy: { id: 'asc' },
+    });
+    if (pending.length === 0) return;
+
+    const byChannel = new Map<string, typeof pending>();
+    for (const p of pending) {
+      const arr = byChannel.get(p.channelCode) ?? [];
+      arr.push(p);
+      byChannel.set(p.channelCode, arr);
+    }
+
+    for (const [code, intents] of byChannel) {
+      try {
+        await this.scanChannel(code, intents);
+      } catch (err: any) {
+        this.logger.warn(`扫 USDT 通道 ${code} 出错，下一轮再试：${err.message}`);
+      }
+    }
+  }
+
+  private async scanChannel(
+    code: string,
+    intents: { id: bigint; refType: string; refNo: string; amountUnits: bigint; createdAt: Date }[],
+  ) {
+    const channel = await this.prisma.payChannel.findUnique({ where: { code } });
+    if (!channel || !channel.isEnabled) return;
+    const cred = tryDecryptJson<UsdtCredentials>(this.secret(), channel.credentialsEncrypted);
+    if (!cred?.address) return;
+
+    // 从最早那笔待付款往前推 10 分钟开始查：用户可能在我们建单之前
+    // 就已经把币转出去了（先转账后回来点付款的人不少）。
+    const oldest = Math.min(...intents.map((i) => i.createdAt.getTime()));
+    const transfers = await this.usdt.recentIncoming(cred, {
+      sinceMs: oldest - 10 * 60_000,
+      limit: 100,
+    });
+    if (transfers.length === 0) return;
+
+    const wanted = new Map(intents.map((i) => [i.amountUnits.toString(), i]));
+    for (const t of transfers) {
+      const hit = wanted.get(t.valueUnits.toString());
+      if (!hit) continue;
+
+      // 同一笔链上转账只能核销一张单。没这个判断的话，同一个 txId
+      // 会在每一轮扫描里被重复认领 —— 一笔钱开出十台机器。
+      const used = await this.prisma.usdtIntent.findFirst({ where: { txId: t.txId } });
+      if (used) continue;
+
+      const claimed = await this.prisma.usdtIntent.updateMany({
+        where: { id: hit.id, status: UsdtIntentStatus.pending },
+        data: { status: UsdtIntentStatus.paid, txId: t.txId, paidAt: new Date() },
+      });
+      if (claimed.count !== 1) continue; // 别的进程抢先处理了
+
+      this.logger.log(
+        `USDT 到账：${this.usdt.format(t.valueUnits)} USDT → ${hit.refType} ${hit.refNo}（${t.txId}）`,
+      );
+      try {
+        await this.settle(hit.refType as 'order' | 'recharge', hit.refNo, {
+          channel: code,
+          upstreamNo: t.txId,
+          raw: { txId: t.txId, from: t.from, value: t.valueUnits.toString() },
+        });
+      } catch (err: any) {
+        // 钱已经到账了，单子没走通只能人工处理。这里绝不能把 intent 改回
+        // pending —— 那会让下一轮再认领一次同样的钱。
+        this.logger.error(
+          `USDT 到账后处理 ${hit.refType} ${hit.refNo} 失败，需要人工介入：${err.message}`,
+        );
+      }
+      wanted.delete(t.valueUnits.toString());
+    }
+  }
+
+  // ---------- 金额换算 ----------
 
   /**
    * 换算金额。
@@ -144,7 +521,6 @@ export class PaymentsService {
     channel: { settleCurrency: string | null; rate: number | null; usdToCnyRate: number | null },
   ): number {
     if (!channel.settleCurrency || channel.settleCurrency === orderCurrency) return amountCents;
-    // USD 订单走 CNY 通道时先折成 CNY
     let cents = amountCents;
     if (orderCurrency === 'USD' && channel.usdToCnyRate) {
       cents = Math.round(cents * channel.usdToCnyRate);
@@ -155,67 +531,128 @@ export class PaymentsService {
   // ---------- 回调 ----------
 
   /**
+   * 钱到账之后往哪走。
+   *
+   * 单号前缀决定去向：ORD 是套餐订单（去建机），RCH 是充值单（去加余额）。
+   * 两条路都必须幂等 —— 支付平台的回调会重发，重发不能重复建机也不能重复加钱。
+   */
+  private async settle(
+    kind: 'order' | 'recharge',
+    no: string,
+    payment: { channel: string; upstreamNo?: string; amountCents?: number; raw?: any },
+  ) {
+    return kind === 'recharge'
+      ? this.wallet.markRechargePaid(no, payment)
+      : this.orders.markPaid(no, payment);
+  }
+
+  private kindOf(no: string): 'order' | 'recharge' {
+    return no.startsWith('RCH') ? 'recharge' : 'order';
+  }
+
+  /** 按单号找到它当初记下的支付通道。验签必须用这一个，不能挨个通道去试。 */
+  private async channelFor(no: string) {
+    const kind = this.kindOf(no);
+    const row =
+      kind === 'recharge'
+        ? await this.prisma.rechargeOrder.findUnique({ where: { rechargeNo: no } })
+        : await this.prisma.order.findUnique({ where: { orderNo: no } });
+    if (!row) return { kind, row: null, channel: null };
+    const channel = row.payChannel
+      ? await this.prisma.payChannel.findUnique({ where: { code: row.payChannel } })
+      : null;
+    return { kind, row, channel };
+  }
+
+  /**
    * Jeepay 异步通知。
    *
    * 这个接口不需要登录（支付平台带不了令牌），所以**验签是唯一的防线**。
    * 验签不过一律拒绝，绝不能因为「看着像成功」就放行。
-   *
-   * 无论成功失败都要尽快返回，处理慢了支付平台会判超时并重发。
-   * 建机这种慢活是丢进队列异步做的，这里只写库。
    */
   async handleJeepayNotify(body: Record<string, any>): Promise<string> {
-    const orderNo = body?.mchOrderNo;
-    this.logger.log(`收到 Jeepay 通知：订单 ${orderNo} state=${body?.state}`);
+    return this.handleNotify('jeepay', String(body?.mchOrderNo ?? ''), body, (cred, params) =>
+      this.jeepay.parseNotify(params, cred as JeepayCredentials),
+    );
+  }
 
-    if (!orderNo) {
-      this.logger.warn('Jeepay 通知里没有 mchOrderNo，忽略');
+  /**
+   * 易支付异步通知。
+   *
+   * 易支付发的是 GET，参数在查询串上；返回体必须是纯文本 success，
+   * 回别的内容它会认为失败并反复重发，用户那边就一直显示未支付。
+   */
+  async handleEpayNotify(params: Record<string, any>): Promise<string> {
+    return this.handleNotify('epay', String(params?.out_trade_no ?? ''), params, (cred, p) =>
+      this.epay.parseNotify(p, cred as EpayCredentials),
+    );
+  }
+
+  /** 两家网关的回调只有解析函数不同，其余流程完全一样 */
+  private async handleNotify(
+    driver: string,
+    no: string,
+    params: Record<string, any>,
+    parse: (
+      cred: unknown,
+      params: Record<string, any>,
+    ) => {
+      valid: boolean;
+      success: boolean;
+      upstreamNo?: string;
+      amountCents?: number;
+      reason?: string;
+    },
+  ): Promise<string> {
+    this.logger.log(`收到 ${driver} 通知：单号 ${no || '(空)'}`);
+    if (!no) {
+      this.logger.warn(`${driver} 通知里没有商户单号，忽略`);
       return 'fail';
     }
 
-    const order = await this.prisma.order.findUnique({ where: { orderNo } });
-    if (!order) {
-      this.logger.warn(`Jeepay 通知的订单 ${orderNo} 在库里找不到`);
+    const { kind, row, channel } = await this.channelFor(no);
+    if (!row) {
+      this.logger.warn(`${driver} 通知的单号 ${no} 在库里找不到`);
       return 'fail';
     }
-
-    // 用订单上记着的通道去验签。不能遍历所有通道挨个试 ——
-    // 那等于给了攻击者用任意一个通道的密钥去伪造任意订单的机会。
-    const channel = order.payChannel
-      ? await this.prisma.payChannel.findUnique({ where: { code: order.payChannel } })
-      : null;
     if (!channel) {
-      this.logger.error(`订单 ${orderNo} 没有记录支付通道，无法验签`);
+      this.logger.error(`单号 ${no} 没有记录支付通道，无法验签`);
+      return 'fail';
+    }
+    if (channel.driver !== driver) {
+      // 用 A 通道下的单，却收到 B 通道的回调 —— 要么配置错了，要么有人在试探
+      this.logger.error(`单号 ${no} 的通道是 ${channel.driver}，却收到 ${driver} 的通知，已拒绝`);
       return 'fail';
     }
 
-    const cred = tryDecryptJson<JeepayCredentials>(this.secret(), channel.credentialsEncrypted);
+    const cred = tryDecryptJson<any>(this.secret(), channel.credentialsEncrypted);
     if (!cred) {
       this.logger.error(`通道 ${channel.code} 的凭据解不开，CREDENTIALS_SECRET 可能被改过`);
       return 'fail';
     }
 
-    const parsed = this.jeepay.parseNotify(body, cred);
+    const parsed = parse({ ...cred, gatewayUrl: channel.gatewayUrl || cred.gatewayUrl }, params);
     if (!parsed.valid) {
       // 验签失败要记下来，这可能是有人在试探
-      this.logger.error(`订单 ${orderNo} 的 Jeepay 通知验签失败，已拒绝`);
+      this.logger.error(`单号 ${no} 的 ${driver} 通知验签失败，已拒绝`);
       return 'fail';
     }
     if (!parsed.success) {
-      this.logger.log(`订单 ${orderNo} 支付未成功：${parsed.reason}`);
+      this.logger.log(`单号 ${no} 支付未成功：${parsed.reason}`);
       // 验签是对的，只是这次状态不是成功。回 success 让平台别再重发这一条。
       return 'success';
     }
 
     try {
-      await this.orders.markPaid(orderNo, {
+      await this.settle(kind, no, {
         channel: channel.code,
         upstreamNo: parsed.upstreamNo,
         amountCents: parsed.amountCents,
-        raw: body,
+        raw: params,
       });
     } catch (err: any) {
-      this.logger.error(`处理订单 ${orderNo} 支付成功时出错：${err.message}`);
-      // 回 fail 让平台重发，我们下次再试。markPaid 本身是幂等的，重发不会重复建机。
+      this.logger.error(`处理 ${no} 支付成功时出错：${err.message}`);
+      // 回 fail 让平台重发，我们下次再试。settle 是幂等的，重发不会重复处理。
       return 'fail';
     }
     return 'success';
@@ -224,7 +661,9 @@ export class PaymentsService {
   // ---------- 通道管理 ----------
 
   async adminList() {
-    const rows = await this.prisma.payChannel.findMany({ orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }] });
+    const rows = await this.prisma.payChannel.findMany({
+      orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
+    });
     return rows.map((c) => ({
       id: c.id.toString(),
       code: c.code,
@@ -243,6 +682,11 @@ export class PaymentsService {
       credentialSummary: this.summarize(c.driver, c.credentialsEncrypted),
       createdAt: c.createdAt,
     }));
+  }
+
+  /** 前端渲染「加通道」表单要知道每种驱动需要填什么 */
+  driverSpecs() {
+    return DRIVER_SPECS;
   }
 
   async createChannel(dto: ChannelInput) {
@@ -282,7 +726,9 @@ export class PaymentsService {
         ...(dto.wayCode !== undefined ? { wayCode: dto.wayCode } : {}),
         ...(dto.settleCurrency !== undefined ? { settleCurrency: dto.settleCurrency } : {}),
         ...(dto.gatewayUrl !== undefined ? { gatewayUrl: dto.gatewayUrl } : {}),
-        ...(dto.credentials ? { credentialsEncrypted: encryptJson(this.secret(), dto.credentials) } : {}),
+        ...(dto.credentials
+          ? { credentialsEncrypted: encryptJson(this.secret(), dto.credentials) }
+          : {}),
         ...(dto.rate !== undefined ? { rate: dto.rate } : {}),
         ...(dto.usdToCnyRate !== undefined ? { usdToCnyRate: dto.usdToCnyRate } : {}),
         ...(dto.isEnabled !== undefined ? { isEnabled: dto.isEnabled } : {}),
@@ -296,11 +742,13 @@ export class PaymentsService {
   async deleteChannel(id: bigint) {
     const channel = await this.prisma.payChannel.findUnique({ where: { id } });
     if (!channel) throw new NotFoundException('支付通道不存在');
-    const used = await this.prisma.order.count({ where: { payChannel: channel.code } });
+    const used =
+      (await this.prisma.order.count({ where: { payChannel: channel.code } })) +
+      (await this.prisma.rechargeOrder.count({ where: { payChannel: channel.code } }));
     if (used > 0) {
       // 删掉的话历史订单的回调就验不了签了，而且对账查不到通道信息
       await this.prisma.payChannel.update({ where: { id }, data: { isEnabled: false } });
-      return { ok: true, message: `这个通道有 ${used} 笔历史订单，已改为停用而不是删除` };
+      return { ok: true, message: `这个通道有 ${used} 笔历史单据，已改为停用而不是删除` };
     }
     await this.prisma.payChannel.delete({ where: { id } });
     return { ok: true, message: '已删除' };
@@ -309,30 +757,60 @@ export class PaymentsService {
   async verifyChannel(id: bigint) {
     const c = await this.prisma.payChannel.findUnique({ where: { id } });
     if (!c) throw new NotFoundException('支付通道不存在');
-    if (c.driver === 'manual') {
-      return { ok: true, message: '线下转账通道不需要测试' };
-    }
-    const cred = tryDecryptJson<JeepayCredentials>(this.secret(), c.credentialsEncrypted);
+    if (c.driver === 'manual') return { ok: true, message: '线下转账通道不需要测试' };
+    if (c.driver === 'balance') return { ok: true, message: '余额支付不需要测试' };
+
+    const cred = tryDecryptJson<any>(this.secret(), c.credentialsEncrypted);
     if (!cred) return { ok: false, message: '凭据解不开，请重新填一遍' };
-    return this.jeepay.verifyCredentials({
-      ...cred,
-      gatewayUrl: c.gatewayUrl || cred.gatewayUrl,
-    });
+    const gatewayUrl = c.gatewayUrl || cred.gatewayUrl;
+
+    switch (c.driver) {
+      case 'jeepay':
+        return this.jeepay.verifyCredentials({ ...cred, gatewayUrl });
+      case 'epay':
+        return this.epay.verifyCredentials({ ...cred, gatewayUrl });
+      case 'usdt_trc20':
+        return this.usdt.verifyCredentials(cred);
+      default:
+        return { ok: false, message: `不认识的驱动 ${c.driver}` };
+    }
   }
 
   private validateChannel(dto: ChannelInput) {
-    if (dto.driver === 'jeepay') {
-      const c = (dto.credentials ?? {}) as Partial<JeepayCredentials>;
-      const missing = (['gatewayUrl', 'mchNo', 'appId', 'appSecret'] as const).filter(
-        (k) => !c[k] && !(k === 'gatewayUrl' && dto.gatewayUrl),
+    const c = (dto.credentials ?? {}) as Record<string, any>;
+    const spec = DRIVER_SPECS.find((s) => s.driver === dto.driver);
+    if (!spec) throw new BadRequestException(`不认识的支付驱动 ${dto.driver}`);
+
+    const missing = spec.credentialFields
+      .filter((f) => f.required && !c[f.key] && !(f.key === 'gatewayUrl' && dto.gatewayUrl))
+      .map((f) => f.label);
+    if (missing.length) {
+      throw new BadRequestException(`${spec.label} 通道还缺这些：${missing.join('、')}`);
+    }
+
+    if (dto.driver === 'jeepay' && !dto.wayCode) {
+      throw new BadRequestException(
+        '还没填支付方式码（wayCode）。这个值要问你的 Jeepay 服务商要，' +
+          '比如支付宝扫码是 ALI_QR、微信扫码是 WX_NATIVE',
       );
-      if (missing.length) {
-        throw new BadRequestException(`Jeepay 通道还缺这些：${missing.join('、')}`);
-      }
-      if (!dto.wayCode) {
+    }
+    if (dto.driver === 'epay' && !dto.wayCode) {
+      throw new BadRequestException(
+        '还没填支付方式（wayCode）。易支付常见的是 alipay / wxpay / qqpay / bank',
+      );
+    }
+    if (dto.driver === 'usdt_trc20') {
+      const addr = String(c.address ?? '');
+      if (!this.usdt.isValidAddress(addr)) {
         throw new BadRequestException(
-          '还没填支付方式码（wayCode）。这个值要问你的 Jeepay 服务商要，' +
-            '比如支付宝扫码是 ALI_QR、微信扫码是 WX_NATIVE',
+          /^0x/i.test(addr)
+            ? '这是以太坊（ERC20）地址。TRC20 收款地址是 T 开头的 34 位，填错链收到的币拿不回来。'
+            : '收款地址格式不对，TRC20 地址是 T 开头的 34 位',
+        );
+      }
+      if (!dto.usdToCnyRate || dto.usdToCnyRate <= 0) {
+        throw new BadRequestException(
+          '要填汇率（1 USDT 折多少人民币，比如 7.25）。人民币计价的订单靠它算该收多少币。',
         );
       }
     }
@@ -340,22 +818,142 @@ export class PaymentsService {
 
   private summarize(driver: string, blob: string): Record<string, string> {
     if (driver === 'manual') return { 类型: '线下转账，无需凭据' };
+    if (driver === 'balance') return { 类型: '账户余额，无需凭据' };
     const c = tryDecryptJson<any>(this.secret(), blob);
     if (!c) return { 状态: '解密失败，需要重新填写凭据' };
-    const secret = String(c.appSecret ?? '');
+
+    if (driver === 'usdt_trc20') {
+      const a = String(c.address ?? '');
+      return {
+        收款地址: a ? `${a.slice(0, 6)}…${a.slice(-6)}` : '未配置',
+        接口密钥: c.apiKey ? '已配置' : '未配置（可能被限流）',
+      };
+    }
+    if (driver === 'epay') {
+      return { 商户ID: String(c.pid ?? '?'), 商户密钥: mask(c.key) };
+    }
     return {
       商户号: c.mchNo ?? '?',
       应用ID: c.appId ?? '?',
-      密钥: secret ? `${secret.slice(0, 4)}${'*'.repeat(10)}${secret.slice(-4)}` : '未配置',
+      密钥: mask(c.appSecret),
     };
   }
 }
+
+function mask(v: any): string {
+  const s = String(v ?? '');
+  if (!s) return '未配置';
+  return s.length <= 8 ? '*'.repeat(s.length) : `${s.slice(0, 4)}${'*'.repeat(8)}${s.slice(-4)}`;
+}
+
+export interface CredentialField {
+  key: string;
+  label: string;
+  type: string;
+  required: boolean;
+  hint: string;
+}
+
+export interface DriverSpec {
+  driver: ChannelInput['driver'];
+  label: string;
+  hint: string;
+  needsWayCode: boolean;
+  wayCodeHint?: string;
+  needsRate?: boolean;
+  credentialFields: CredentialField[];
+}
+
+/** 每种驱动要填什么。前端拿它渲染表单，服务端拿它做必填校验，一处定义两处用。 */
+export const DRIVER_SPECS: DriverSpec[] = [
+  {
+    driver: 'epay',
+    label: '易支付',
+    hint: '国内大量服务商共用的一套接口。填服务商给你的网关地址、商户 ID、商户密钥。',
+    needsWayCode: true,
+    wayCodeHint: '支付方式：alipay 支付宝 / wxpay 微信 / qqpay QQ钱包 / bank 网银',
+    credentialFields: [
+      {
+        key: 'gatewayUrl',
+        label: '网关地址',
+        type: 'text',
+        required: true,
+        hint: '填到域名为止，比如 https://pay.example.com，不要带 /submit.php',
+      },
+      { key: 'pid', label: '商户 ID', type: 'text', required: true, hint: '服务商后台的 PID，一串数字' },
+      {
+        key: 'key',
+        label: '商户密钥',
+        type: 'password',
+        required: true,
+        hint: '服务商后台的 KEY。注意别把前后空格一起复制进来 —— 那会一直报签名错误',
+      },
+    ],
+  },
+  {
+    driver: 'usdt_trc20',
+    label: 'USDT（TRC20）',
+    hint: '直接收到你自己的钱包地址，不需要任何商户账号。面板盯着链上，靠金额唯一认单。',
+    needsWayCode: false,
+    needsRate: true,
+    credentialFields: [
+      {
+        key: 'address',
+        label: '收款地址',
+        type: 'text',
+        required: true,
+        hint: 'T 开头的 34 位波场地址。填 0x 开头的以太坊地址会收不到钱。',
+      },
+      {
+        key: 'apiKey',
+        label: 'TronGrid API Key',
+        type: 'password',
+        required: false,
+        hint: '选填。不填也能用，但查询频繁时会被限流。在 trongrid.io 免费申请。',
+      },
+      {
+        key: 'apiBase',
+        label: '接口地址',
+        type: 'text',
+        required: false,
+        hint: '选填，默认 https://api.trongrid.io。有自建节点可以换成自己的。',
+      },
+    ],
+  },
+  {
+    driver: 'jeepay',
+    label: 'Jeepay 聚合支付',
+    hint: '你自己部署的 Jeepay 网关。',
+    needsWayCode: true,
+    wayCodeHint: '支付方式码：ALI_QR 支付宝扫码 / WX_NATIVE 微信扫码',
+    credentialFields: [
+      { key: 'gatewayUrl', label: '网关地址', type: 'text', required: true, hint: '填到域名为止' },
+      { key: 'mchNo', label: '商户号', type: 'text', required: true, hint: '' },
+      { key: 'appId', label: '应用 ID', type: 'text', required: true, hint: '' },
+      { key: 'appSecret', label: '应用密钥', type: 'password', required: true, hint: '' },
+    ],
+  },
+  {
+    driver: 'balance',
+    label: '账户余额',
+    hint: '用户先充值再消费。加了这个通道，结算页才会出现「余额支付」。',
+    needsWayCode: false,
+    credentialFields: [],
+  },
+  {
+    driver: 'manual',
+    label: '线下转账',
+    hint: '用户按说明转账，管理员在后台手工确认。说明文字写在「备注」里，会显示给用户。',
+    needsWayCode: false,
+    credentialFields: [],
+  },
+];
 
 export interface ChannelInput {
   code: string;
   name: string;
   icon?: string;
-  driver: 'jeepay' | 'manual';
+  driver: 'jeepay' | 'epay' | 'usdt_trc20' | 'balance' | 'manual';
   wayCode?: string;
   settleCurrency?: string;
   gatewayUrl?: string;

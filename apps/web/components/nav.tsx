@@ -60,6 +60,7 @@ export function Nav() {
           {link('/', '选购')}
           {me && link('/dashboard', '我的机器')}
           {me && link('/orders', '订单')}
+          {me && link('/wallet', '余额')}
           {me?.role === 'admin' && link('/admin', '后台')}
         </nav>
 

@@ -1,4 +1,15 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { PaymentsService, ChannelInput } from './payments.service';
 import { AdminGuard, AuthedUser, ClientIp, CurrentUser, Public } from '../auth/auth.decorators';
 
@@ -11,6 +22,30 @@ export class PaymentsController {
   @Get('channels')
   channels() {
     return this.payments.publicChannels();
+  }
+
+  /** 每种支付驱动要填哪些字段。后台加通道的表单靠它渲染。 */
+  @Public()
+  @Get('driver-specs')
+  driverSpecs() {
+    return this.payments.driverSpecs();
+  }
+
+  /** 充值单付款。和订单付款走同一套通道，只是单子不同。 */
+  @Post('recharge/:rechargeNo/pay')
+  payRecharge(
+    @CurrentUser() user: AuthedUser,
+    @Param('rechargeNo') no: string,
+    @Body() body: { channel: string },
+    @ClientIp() ip?: string,
+  ) {
+    return this.payments.payRecharge(user, no, body?.channel, ip);
+  }
+
+  /** 前端轮询这个看 USDT 到账没有 —— 链上收款没有回调，只能问 */
+  @Get('usdt/:intentNo')
+  usdtStatus(@CurrentUser() user: AuthedUser, @Param('intentNo') no: string) {
+    return this.payments.usdtStatus(user, no);
   }
 
   @Post(':orderNo/pay')
@@ -35,6 +70,25 @@ export class PaymentsController {
     // Jeepay 可能发 JSON 也可能发表单，两种都收
     const params = { ...(body ?? {}), ...(req.query ?? {}) };
     return this.payments.handleJeepayNotify(params);
+  }
+
+  /**
+   * 易支付异步通知。
+   *
+   * 易支付发的是 GET，参数在查询串上；但有些服务商改成了 POST，
+   * 所以两个方法都挂上，合并 query 和 body 一起处理。
+   * 返回体必须是纯文本 success，回别的内容它会一直重发。
+   */
+  @Public()
+  @Get('epay/notify')
+  epayNotifyGet(@Query() query: Record<string, any>) {
+    return this.payments.handleEpayNotify(query ?? {});
+  }
+
+  @Public()
+  @Post('epay/notify')
+  epayNotifyPost(@Req() req: any, @Body() body: Record<string, any>) {
+    return this.payments.handleEpayNotify({ ...(req.query ?? {}), ...(body ?? {}) });
   }
 }
 

@@ -13,6 +13,7 @@ import {
   type PaymentStatus,
 } from '@/lib/api';
 import { Notice, PanelBar, Unit } from '@/components/ui';
+import { PayPanel } from '@/components/pay-panel';
 
 interface OrderDetail extends OrderItem {
   plan?: { name: string; regionLabel: string; cpu: number; memoryMb: number; diskGb: number };
@@ -25,7 +26,7 @@ export function Checkout({ orderNo }: { orderNo: string }) {
   const [order, setOrder] = useState<OrderDetail | null>(null);
   const [channels, setChannels] = useState<PayChannel[]>([]);
   const [picked, setPicked] = useState<string | null>(null);
-  const [payInfo, setPayInfo] = useState<{ kind: string; codeUrl?: string; payUrl?: string; message?: string; instructions?: string | null } | null>(null);
+  const [payInfo, setPayInfo] = useState<any>(null);
   const [status, setStatus] = useState<PaymentStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -91,6 +92,9 @@ export function Checkout({ orderNo }: { orderNo: string }) {
     try {
       const r = await api.post<any>(`/api/payments/${orderNo}/pay`, { channel: picked });
       setPayInfo(r);
+      // 余额支付是当场扣款当场成交，没有跳转也没有二维码，
+      // 直接把状态刷新出来，让用户看见「已到账，正在开通」
+      if (r.kind === 'paid') await loadStatus();
       if (r.payUrl) window.location.href = r.payUrl;
     } catch (e: any) {
       setError(e.message);
@@ -274,31 +278,12 @@ export function Checkout({ orderNo }: { orderNo: string }) {
               </>
             )}
 
-            {payInfo?.kind === 'manual' && (
-              <div style={{ marginTop: 16 }}>
-                <Notice tone="info">
-                  {payInfo.message}
-                  {payInfo.instructions && (
-                    <div style={{ marginTop: 10, whiteSpace: 'pre-wrap' }}>{payInfo.instructions}</div>
-                  )}
-                </Notice>
-              </div>
-            )}
-
-            {payInfo?.codeUrl && !payInfo.payUrl && (
-              <div style={{ marginTop: 16 }}>
-                <Notice tone="info">
-                  请用支付软件扫码付款。付款成功后这个页面会自动跳转，不用手动刷新。
-                </Notice>
-                <div className="well" style={{ marginTop: 12, wordBreak: 'break-all' }}>
-                  <div className="ro-k">二维码内容</div>
-                  <div className="data" style={{ fontSize: 12, marginTop: 6 }}>{payInfo.codeUrl}</div>
-                </div>
-              </div>
-            )}
           </div>
         </Unit>
       )}
+
+      {/* 付款指引：扫码 / USDT / 线下转账，和充值页共用同一套 */}
+      {!paid && payInfo && <PayPanel info={payInfo} />}
 
       <Unit>
         <div className="panelbody">

@@ -283,6 +283,8 @@ export interface PayChannel {
   driver: string;
   settleCurrency: string | null;
   desc: string | null;
+  /** 充值单能不能用这个方式付。余额通道不能（拿余额充余额没有意义）。 */
+  usableForRecharge?: boolean;
 }
 
 // ---------- 展示辅助 ----------
