@@ -63,6 +63,8 @@ interface ProxmoxSpec {
   nameserver?: string;
   /** 由上层分配好传进来的具体地址，形如 172.31.0.5 */
   assignedIp?: string;
+  /// 走哪个 NAT 网关对外。面板读它，驱动本身用不到。
+  natGatewayId?: number;
 }
 
 @Injectable()

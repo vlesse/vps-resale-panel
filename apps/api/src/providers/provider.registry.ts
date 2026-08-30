@@ -22,6 +22,12 @@ export interface MachineLike {
   sshPort?: number | null;
   providerRefJson?: unknown;
   authPayloadEncrypted?: string | null;
+  /**
+   * NAT 机器的对外落点。机器本身待在私网里，面板从公网连不到它的 ip，
+   * 只能连网关映射出来的那个端口。查询时 include 了这一层就会自动用上，
+   * 没 include 就当普通机器处理（对有公网 IP 的机器来说本来就是对的）。
+   */
+  natBinding?: { sshPort: number; gateway: { publicHost: string } } | null;
 }
 
 export interface CloudAccountLike {
@@ -92,10 +98,17 @@ export class ProviderRegistry {
     if (!auth) return undefined;
     return {
       sshUser: auth.sshUser || 'root',
-      sshPort: auth.sshPort || machine.sshPort || 22,
+      // NAT 机器的凭据里存的是机器自己的 22 —— 那是私网里的事实，
+      // 从面板这边过去要走网关映射出来的端口，所以映射优先。
+      sshPort: machine.natBinding?.sshPort || auth.sshPort || machine.sshPort || 22,
       password: auth.password,
       privateKey: auth.privateKey,
     };
+  }
+
+  /** 面板该往哪个地址连这台机器。NAT 机器连的是网关，不是它自己的私网地址。 */
+  reachableHost(machine: MachineLike): string | undefined {
+    return machine.natBinding?.gateway.publicHost ?? machine.ip ?? undefined;
   }
 
   /** 把一台机器 + 它所属的云账号，组装成驱动能用的调用上下文 */
@@ -104,7 +117,7 @@ export class ProviderRegistry {
       credentials: this.decryptCredentials(account),
       ref: (machine.providerRefJson ?? {}) as ProviderRef,
       auth: this.decryptAuth(machine),
-      ip: machine.ip ?? undefined,
+      ip: this.reachableHost(machine),
     };
   }
 

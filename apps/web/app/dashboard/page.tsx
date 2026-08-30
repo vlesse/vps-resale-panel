@@ -82,7 +82,15 @@ export default function Dashboard() {
                   {s.planName ?? '机器'}
                 </div>
                 <div className="data" style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>
-                  {s.ip ?? (s.status === 'provisioning' ? '正在开通，尚未分配 IP' : s.status === 'error' ? '开通失败，没有分配到机器' : '没有可用地址')}
+                  {s.ip
+                    ? s.isNat
+                      ? `${s.ip}:${s.sshPort ?? 22}（NAT）`
+                      : s.ip
+                    : s.status === 'provisioning'
+                      ? '正在开通，尚未分配 IP'
+                      : s.status === 'error'
+                        ? '开通失败，没有分配到机器'
+                        : '没有可用地址'}
                   {s.cpu ? ` · ${s.cpu} vCPU · ${(s.memoryMb! / 1024).toFixed(0)} GB · ${s.diskGb} GB` : ''}
                 </div>
                 <div className="silk" style={{ fontSize: 9.5, marginTop: 5 }}>

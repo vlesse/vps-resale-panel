@@ -204,7 +204,7 @@ export class MachinesService {
   async retryRelease(id: bigint) {
     const m = await this.prisma.machine.findUnique({
       where: { id },
-      include: { cloudAccount: true },
+      include: { cloudAccount: true, natBinding: { select: { sshPort: true, gateway: { select: { publicHost: true } } } } },
     });
     if (!m) throw new NotFoundException('机器不存在');
     if (!m.providerRefJson) throw new BadRequestException('这台机器没有云端标识，无法销毁');
@@ -306,7 +306,7 @@ export class MachinesService {
   async testConnection(id: bigint) {
     const m = await this.prisma.machine.findUnique({
       where: { id },
-      include: { cloudAccount: true },
+      include: { cloudAccount: true, natBinding: { select: { sshPort: true, gateway: { select: { publicHost: true } } } } },
     });
     if (!m) throw new NotFoundException('机器不存在');
 

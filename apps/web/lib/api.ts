@@ -192,7 +192,11 @@ export interface ServiceItem {
   cpu?: number;
   memoryMb?: number;
   diskGb?: number;
+  /** 买家该去连的地址。NAT 机器给的是入口地址，不是它自己的私网地址。 */
   ip: string | null;
+  sshPort?: number;
+  /** 是不是 NAT 机器 —— 列表上要标出来，免得买家以为自己买到了独立 IP */
+  isNat?: boolean;
   startAt: string | null;
   expireAt: string;
   daysLeft: number;
@@ -223,6 +227,8 @@ export interface ServiceDetail extends ServiceItem {
     password?: string;
     osTemplate?: string;
     region?: string;
+    /** NAT 机器才有：机器自己在私网里的地址，以及分到的公网端口段 */
+    nat?: { internalIp: string; portStart: number; portEnd: number };
   } | null;
   liveStatus: LiveStatus | null;
   /** 实时探测失败时的原因。读数会退回上一次采集到的值，页面照常能用。 */

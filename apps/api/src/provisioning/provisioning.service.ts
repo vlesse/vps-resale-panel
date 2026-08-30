@@ -23,6 +23,7 @@ import {
   generatePassword,
   generateSshKeyPair,
 } from '../crypto/crypto.util';
+import { NatEndpoint, NatService } from '../nat/nat.service';
 
 /**
  * 建机编排 —— 从「订单付款成功」到「机器交到用户手上」之间的全部逻辑。
@@ -46,6 +47,7 @@ export class ProvisioningService {
     private readonly prisma: PrismaService,
     private readonly registry: ProviderRegistry,
     private readonly config: ConfigService,
+    private readonly nat: NatService,
   ) {}
 
   // ============================================================
@@ -297,16 +299,41 @@ export class ProvisioningService {
       throw err;
     }
 
+    // NAT 套餐：机器建好了但还藏在私网里，要在网关上给它开一段端口才卖得出去。
+    // 放在回滚之后、落库之前 —— 端口开不出来的机器等于交付不了，
+    // 不如让它跟着建机一起失败，由回滚逻辑把机器销毁掉。
+    let nat: NatEndpoint | null = null;
+    if (spec.natGatewayId) {
+      try {
+        await progress(96, '在公网入口上分配端口');
+        nat = await this.nat.attach(machine.id, BigInt(spec.natGatewayId), result.ip ?? '');
+      } catch (err) {
+        await this.rollbackMachine(machine.id, plan.fulfillment, ctx, err);
+        throw err;
+      }
+    }
+
     // 落库。机器和服务必须一起更新，中间断电会导致「机器建出来了但没人认领」。
     const authBlob = encryptJson(this.secret(), result.auth);
     const deliver = {
-      ip: result.ip,
+      // 买家看到的必须是能连上的那个地址。NAT 机器的私网地址写给他没用，
+      // 但也不能藏起来 —— 他在机器里看到的网卡就是那个地址，对不上会以为被骗了。
+      ip: nat ? nat.publicHost : result.ip,
       ipv6: result.ipv6,
-      sshPort: result.auth.sshPort,
+      sshPort: nat ? nat.sshPort : result.auth.sshPort,
       username: result.auth.sshUser,
       password,
       osTemplate: result.osTemplate ?? plan.osTemplate,
       region: plan.regionLabel,
+      ...(nat
+        ? {
+            nat: {
+              internalIp: nat.internalIp,
+              portStart: nat.portStart,
+              portEnd: nat.portEnd,
+            },
+          }
+        : {}),
     };
 
     await this.prisma.$transaction([
@@ -318,6 +345,8 @@ export class ProvisioningService {
           sshPort: result.auth.sshPort,
           providerRefJson: result.ref as Prisma.InputJsonValue,
           authPayloadEncrypted: authBlob,
+          // 面板自己后续要 SSH 上去（探状态、重装前的清理），走的也是公网端口
+          ...(nat ? { sshPort: nat.sshPort } : {}),
           osTemplate: result.osTemplate ?? plan.osTemplate,
           status: MachineStatus.running,
           lastError: null,
@@ -351,7 +380,13 @@ export class ProvisioningService {
         service: {
           include: {
             plan: { include: { cloudAccount: true } },
-            machine: true,
+            machine: {
+              include: {
+                natBinding: {
+                  include: { gateway: { select: { publicHost: true } } },
+                },
+              },
+            },
             // 重装要按当初买的规格重建。不带上原订单的话，自定义档
             // 重装一次配置就掉回套餐默认值 —— 用户 8 核变 2 核。
             order: { select: { customSpecJson: true } },
@@ -384,9 +419,14 @@ export class ProvisioningService {
     const keypair = generateSshKeyPair(`panel-${machine.code}`);
     const ctx = this.registry.contextFor(machine, plan.cloudAccount);
 
+    // 重装要落回原来那个私网地址：端口映射是照地址写的，
+    // 换个地址等于把买家保存的连接方式作废掉。
+    const rebuildSpec = this.effectiveSpec(plan, service.order?.customSpecJson ?? null);
+    if (rebuildSpec.ipPool && machine.ip) rebuildSpec.assignedIp = machine.ip;
+
     const result = await driver.rebuild(ctx, {
       code: machine.code,
-      spec: this.effectiveSpec(plan, service.order?.customSpecJson ?? null),
+      spec: rebuildSpec,
       hostname: machine.code.toLowerCase(),
       password,
       publicKeyOpenssh: keypair.publicKeyOpenssh,
@@ -403,6 +443,7 @@ export class ProvisioningService {
           authPayloadEncrypted: encryptJson(this.secret(), result.auth),
           status: MachineStatus.running,
           version: { increment: 1 },
+          ...(machine.natBinding ? { sshPort: machine.natBinding.sshPort } : {}),
         },
       }),
       this.prisma.service.update({
@@ -410,12 +451,21 @@ export class ProvisioningService {
         data: {
           status: ServiceStatus.active,
           deliverPayloadJson: {
-            ip: result.ip,
-            sshPort: result.auth.sshPort,
+            ip: machine.natBinding ? machine.natBinding.gateway.publicHost : result.ip,
+            sshPort: machine.natBinding ? machine.natBinding.sshPort : result.auth.sshPort,
             username: result.auth.sshUser,
             password,
             osTemplate: result.osTemplate ?? plan.osTemplate,
             region: plan.regionLabel,
+            ...(machine.natBinding
+              ? {
+                  nat: {
+                    internalIp: result.ip,
+                    portStart: machine.natBinding.portStart,
+                    portEnd: machine.natBinding.portEnd,
+                  },
+                }
+              : {}),
           } as Prisma.InputJsonValue,
         },
       }),
@@ -430,7 +480,7 @@ export class ProvisioningService {
     const job = await this.prisma.provisionJob.findUniqueOrThrow({
       where: { id: jobId },
       include: {
-        machine: { include: { cloudAccount: true } },
+        machine: { include: { cloudAccount: true, natBinding: { select: { sshPort: true, gateway: { select: { publicHost: true } } } } } },
         service: true,
       },
     });
@@ -454,6 +504,12 @@ export class ProvisioningService {
     // 回收后进 optimizing 而不是直接 ready —— 上一个用户装过什么你不知道，
     // 必须重新走一遍清理和调优才能再卖。
     const isPool = machine.provider === 'ssh';
+
+    // NAT 机器：真删掉的要把端口段还回去，否则端口白占着，
+    // 而且下一台机器分到同一段时，网关上残留的旧规则会把流量打到不存在的地址。
+    // 库存机不还 —— 它回池子里继续待命，面板还得靠这段端口连上去做清理。
+    if (!isPool) await this.nat.detach(machine.id);
+
     await this.prisma.machine.update({
       where: { id: machine.id },
       data: isPool
@@ -730,6 +786,7 @@ export class ProvisioningService {
         await driver.release({ ...ctx, ref: machine.providerRefJson });
         cleaned = true;
         this.logger.log(`已回滚销毁半成品实例 ${machine.code}`);
+        await this.nat.detach(machineId);
       } catch (err: any) {
         this.logger.error(
           `回滚销毁 ${machine.code} 失败！这台机器可能还在云厂商那边计费，` +

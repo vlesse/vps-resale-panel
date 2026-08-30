@@ -226,7 +226,11 @@ export function Console({ id }: { id: string }) {
           <div style={{ padding: '16px 0 16px 20px' }} className="console-left">
             <div className="well">
               <div className="readout">
-                <Readout label="公网 IPv4" value={d?.ip ?? svc.ip ?? '—'} />
+                {/* NAT 机器这个地址是入口的，不是它自己的，标成「公网 IPv4」会误导 */}
+                <Readout
+                  label={d?.nat ? '入口地址' : '公网 IPv4'}
+                  value={d?.ip ?? svc.ip ?? '—'}
+                />
                 <Readout label="已运行" value={formatUptime(live?.uptimeSec)} />
                 <Readout
                   label="内存"
@@ -414,6 +418,32 @@ export function Console({ id }: { id: string }) {
                 在自己电脑上打开终端，粘贴上面的命令回车，然后输入密码就能进这台机器。
                 Windows 用户可以用自带的 PowerShell，命令一样。
               </div>
+
+              {/*
+                NAT 机器必须把「你看到的地址」和「机器自己看到的地址」两件事都讲清楚。
+                买家登进去 ip addr 一看是个 172.31 的地址，不解释的话十有八九
+                以为买到了假机器 —— 这是 NAT VPS 最常见的一张工单。
+              */}
+              {d.nat && (
+                <div style={{ marginTop: 16 }}>
+                  <Notice tone="info">
+                    这是一台 NAT 机器：它没有独立的公网 IP，对外靠上面这个入口地址加端口段。
+                  </Notice>
+                  <div className="readout" style={{ marginTop: 14 }}>
+                    <Readout label="你的公网端口段" value={`${d.nat.portStart}–${d.nat.portEnd}`} />
+                    <Readout label="机器内网地址" value={d.nat.internalIp} />
+                  </div>
+                  <div className="hint" style={{ marginTop: 12 }}>
+                    端口段里第一个端口（{d.sshPort}）固定通到机器的 22，其余
+                    {' '}
+                    {d.nat.portStart + 1}–{d.nat.portEnd} <b>原样转发</b>：
+                    你在机器上让服务监听 {d.nat.portStart + 1}，外面就用
+                    {' '}
+                    <span className="data">{d.ip}:{d.nat.portStart + 1}</span> 访问，不用换算。
+                    TCP 和 UDP 都通。段外的端口（包括 80 和 443）不对外开放。
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </Unit>

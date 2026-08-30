@@ -441,6 +441,21 @@ export class PlansService {
             '确实不想开的话，请在建机参数里显式写 "staticIp": false。',
         );
       }
+
+      // NAT 套餐：网关得真的存在且启用，否则机器会建出来、计着费，
+      // 然后卡在「分配端口」那一步交付失败，还要走一遍回滚。
+      if (spec.natGatewayId != null) {
+        const gw = await this.prisma.natGateway.findUnique({
+          where: { id: BigInt(spec.natGatewayId) },
+        });
+        if (!gw) throw new BadRequestException(`建机参数里写的 NAT 网关 ${spec.natGatewayId} 不存在`);
+        if (!gw.enabled) throw new BadRequestException(`NAT 网关「${gw.name}」是停用状态`);
+        if (!spec.ipPool) {
+          throw new BadRequestException(
+            '走 NAT 网关的套餐必须同时写 ipPool（私网地址池），面板要按它给机器分地址',
+          );
+        }
+      }
     } else {
       if (!dto.matchRules && dto.provider !== ProviderKind.ssh && dto.provider !== ProviderKind.proxmox) {
         throw new BadRequestException('库存池模式请填匹配规则，或者把机器直接绑定到这个套餐上');

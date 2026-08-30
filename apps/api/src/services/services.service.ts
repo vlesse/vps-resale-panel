@@ -45,7 +45,7 @@ export class ServicesService {
     const rows = await this.prisma.service.findMany({
       where: { userId, status: { not: ServiceStatus.cancelled } },
       orderBy: { id: 'desc' },
-      include: { plan: true, machine: true },
+      include: { plan: true, machine: { include: { natBinding: { include: { gateway: { select: { publicHost: true } } } } } } },
     });
     return rows.map((s) => this.toListItem(s));
   }
@@ -73,7 +73,11 @@ export class ServicesService {
         orderBy: { id: 'desc' },
         skip: (page - 1) * pageSize,
         take: pageSize,
-        include: { plan: true, machine: true, user: { select: { id: true, email: true } } },
+        include: {
+          plan: true,
+          machine: { include: { natBinding: { include: { gateway: { select: { publicHost: true } } } } } },
+          user: { select: { id: true, email: true } },
+        },
       }),
     ]);
 
@@ -151,7 +155,7 @@ export class ServicesService {
   async refreshStatus(serviceId: bigint) {
     const service = await this.prisma.service.findUniqueOrThrow({
       where: { id: serviceId },
-      include: { machine: { include: { cloudAccount: true } } },
+      include: { machine: { include: { cloudAccount: true, natBinding: { select: { sshPort: true, gateway: { select: { publicHost: true } } } } } } },
     });
     if (!service.machine) throw new BadRequestException('这个服务还没有绑定机器');
 
@@ -329,7 +333,7 @@ export class ServicesService {
   async suspend(actor: AuthedUser, id: bigint, reason: string) {
     const service = await this.prisma.service.findUniqueOrThrow({
       where: { id },
-      include: { machine: { include: { cloudAccount: true } } },
+      include: { machine: { include: { cloudAccount: true, natBinding: { select: { sshPort: true, gateway: { select: { publicHost: true } } } } } } },
     });
     if (service.machine) {
       const driver = this.registry.get(service.machine.provider);
@@ -347,7 +351,7 @@ export class ServicesService {
   async resume(actor: AuthedUser, id: bigint) {
     const service = await this.prisma.service.findUniqueOrThrow({
       where: { id },
-      include: { machine: { include: { cloudAccount: true } } },
+      include: { machine: { include: { cloudAccount: true, natBinding: { select: { sshPort: true, gateway: { select: { publicHost: true } } } } } } },
     });
     if (service.expireAt < new Date()) {
       throw new BadRequestException('这个服务已经过期了，让用户续费后会自动恢复');
@@ -406,7 +410,7 @@ export class ServicesService {
         expireAt: { lt: now },
         status: { in: [ServiceStatus.active, ServiceStatus.stopped] },
       },
-      include: { machine: { include: { cloudAccount: true } } },
+      include: { machine: { include: { cloudAccount: true, natBinding: { select: { sshPort: true, gateway: { select: { publicHost: true } } } } } } },
       take: 100,
     });
     if (!overdue.length) return;
@@ -445,7 +449,7 @@ export class ServicesService {
   private async load(actor: AuthedUser, id: bigint) {
     const service = await this.prisma.service.findUnique({
       where: { id },
-      include: { plan: true, machine: { include: { cloudAccount: true } } },
+      include: { plan: true, machine: { include: { cloudAccount: true, natBinding: { select: { sshPort: true, gateway: { select: { publicHost: true } } } } } } },
     });
     if (!service) throw new NotFoundException('服务不存在');
     if (actor.role !== UserRole.admin && service.userId !== actor.id) {
@@ -535,7 +539,11 @@ export class ServicesService {
       cpu: s.plan?.cpu,
       memoryMb: s.plan?.memoryMb,
       diskGb: s.plan?.diskGb,
-      ip: s.machine?.ip ?? null,
+      // NAT 机器列在这里的必须是买家能连的那个地址。写私网地址等于没写 ——
+      // 他复制粘贴一个 172.31 的地址，怎么试都连不上。
+      ip: s.machine?.natBinding?.gateway.publicHost ?? s.machine?.ip ?? null,
+      sshPort: s.machine?.natBinding?.sshPort ?? s.machine?.sshPort ?? 22,
+      isNat: !!s.machine?.natBinding,
       startAt: s.startAt,
       expireAt: s.expireAt,
       daysLeft: Math.ceil((new Date(s.expireAt).getTime() - Date.now()) / 86400000),

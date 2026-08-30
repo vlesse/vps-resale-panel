@@ -333,6 +333,7 @@ model Machine {
   plan         Plan?          @relation(fields: [planId], references: [id])
   service      Service?
   jobs         ProvisionJob[]
+  natBinding   NatBinding?
 
   @@index([status, region])
   @@index([planId, status])
@@ -542,4 +543,74 @@ model OperationLog {
   @@index([targetType, targetId])
   @@index([createdAt])
   @@map("operation_logs")
+}
+
+
+// ---------- NAT 入口 ----------
+
+/**
+ * NAT 网关：一台有公网 IP 的机器，替一堆没有公网 IP 的机器接客。
+ *
+ * 卖家自己家里 / 机房里的虚拟机跑在私网（比如 172.31.0.0/24），
+ * 面板把它们的端口映射到这台网关的公网端口上，买家连网关就等于连到机器。
+ * 网关和私网之间怎么通（Tailscale、WireGuard、还是同一个机房的二层）
+ * 面板不关心，只要网关自己能路由到那个网段就行。
+ */
+model NatGateway {
+  id   BigInt @id @default(autoincrement())
+  name String @db.VarChar(64)
+
+  /// 买家看到、也是买家去连的地址。可以是 IP，也可以是域名。
+  publicHost String @map("public_host") @db.VarChar(128)
+
+  /// 面板 SSH 上去下发 iptables 规则用的地址。通常和 publicHost 一样，
+  /// 但网关藏在负载均衡后面时两者会不同，所以分开存。
+  sshHost String @map("ssh_host") @db.VarChar(128)
+  sshPort Int    @default(22) @map("ssh_port")
+  sshUser String @default("root") @map("ssh_user")
+
+  /// AES-256-GCM 密文。明文 { password?, privateKey? }
+  authPayloadEncrypted String? @map("auth_payload_encrypted") @db.Text
+
+  /// 私网网段，形如 172.31.0.0/24
+  subnet String @db.VarChar(32)
+
+  /// 可以拿来分配的公网端口区间（含两端）
+  portStart Int @map("port_start")
+  portEnd   Int @map("port_end")
+
+  /// 每台机器分几个端口。第一个固定映射到机器的 22。
+  portsPerMachine Int @default(20) @map("ports_per_machine")
+
+  enabled    Boolean   @default(true)
+  lastSyncAt DateTime? @map("last_sync_at")
+  lastError  String?   @map("last_error") @db.VarChar(500)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  bindings NatBinding[]
+
+  @@map("nat_gateways")
+}
+
+/// 一台机器占用的端口段。删机器时连带删掉，然后重新下发一次规则。
+model NatBinding {
+  id        BigInt @id @default(autoincrement())
+  gatewayId BigInt @map("gateway_id")
+  machineId BigInt @unique @map("machine_id")
+
+  portStart Int @map("port_start")
+  portEnd   Int @map("port_end")
+
+  /// 映射到机器 22 端口的那个公网端口，取端口段的第一个
+  sshPort Int @map("ssh_port")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  gateway NatGateway @relation(fields: [gatewayId], references: [id], onDelete: Cascade)
+  machine Machine    @relation(fields: [machineId], references: [id], onDelete: Cascade)
+
+  @@unique([gatewayId, portStart])
+  @@map("nat_bindings")
 }
