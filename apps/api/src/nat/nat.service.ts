@@ -56,6 +56,8 @@ const UNIT_PATH = '/etc/systemd/system/panel-nat.service';
  * 写错一次整台机器上的网站全下线。
  */
 const NGINX_MAP_PATH = '/etc/nginx/vps-panel-nat.map';
+/** 补签证书的脚本。放在后台跑，不让签证书拖住开通流程。 */
+const CERT_SCRIPT_PATH = '/usr/local/sbin/panel-nat-certs.sh';
 
 @Injectable()
 export class NatService {
@@ -397,14 +399,22 @@ export class NatService {
       '',
     ].join('\n');
 
-    const b64 = Buffer.from(lines, 'utf8').toString('base64');
+    const hosts = rows.map((r) => webHostFor(gw.webDomain, r.sshPort)).filter(Boolean) as string[];
+    const mapB64 = Buffer.from(lines, 'utf8').toString('base64');
+    const certB64 = Buffer.from(this.renderCertScript(gw, hosts), 'utf8').toString('base64');
+
     const cmd = [
       `cp ${NGINX_MAP_PATH} ${NGINX_MAP_PATH}.bak 2>/dev/null || true`,
-      `echo ${b64} | base64 -d > ${NGINX_MAP_PATH}`,
+      `echo ${mapB64} | base64 -d > ${NGINX_MAP_PATH}`,
       // 配置过不了就回滚，然后以非零退出，让上层知道域名这块没生效
       `if nginx -t 2>/dev/null; then nginx -s reload; else ` +
         `cp ${NGINX_MAP_PATH}.bak ${NGINX_MAP_PATH} 2>/dev/null; ` +
         `echo "nginx -t 没过，映射已回滚"; nginx -t; exit 1; fi`,
+      `echo ${certB64} | base64 -d > ${CERT_SCRIPT_PATH}`,
+      `chmod 750 ${CERT_SCRIPT_PATH}`,
+      // 丢后台跑。签一张证书要十几秒，而且取决于 Let's Encrypt 当时的脸色 ——
+      // 不能让开通流程卡在这上面。机器先按 HTTP 可用，证书随后自己补上。
+      `(setsid nohup ${CERT_SCRIPT_PATH} >/dev/null 2>&1 &) ; true`,
     ].join(' && ');
 
     const auth = this.unpackAuth(gw);
@@ -419,6 +429,98 @@ export class NatService {
           `。网关上要先装好 *.${gw.webDomain} 的站点配置，见文档第 10 章。`,
       );
     }
+  }
+
+  /**
+   * 给还没有证书的二级域名补签。
+   *
+   * 网关上配了泛域名证书的话，这里什么都不用做 —— 一张证书覆盖全部，
+   * 也不受 Let's Encrypt 每周 50 张的签发上限。没有泛域名证书时才逐台签，
+   * 走 HTTP 验证，不需要任何 DNS 服务商的凭据。
+   *
+   * 每次下发都会重跑，所以上次失败的、后来才加进来的，都会被补上。
+   */
+  /**
+   * 给还没有证书的二级域名补签。
+   *
+   * 网关上配了泛域名证书的话这里直接退出 —— 一张证书覆盖全部，
+   * 也不受 Let's Encrypt 每周 50 张的签发上限。没有泛域名证书时才逐台签，
+   * 走 HTTP 验证，不需要任何 DNS 服务商的凭据。
+   *
+   * 每次下发都会重跑，所以上次失败的、后来才加进来的、续期后权限被还原的，
+   * 都会在下一次下发时自动补上。
+   */
+  private renderCertScript(gw: NatGateway, hosts: string[]): string {
+    const NL = String.fromCharCode(10);
+    const L = [
+      '#!/bin/bash',
+      '# 这个文件由 VPS 面板自动生成，手工改动会在下次下发时被覆盖。',
+      'LOG=/var/log/panel-nat-certs.log',
+      'exec >>$LOG 2>&1',
+      'echo "=== $(date -Is) 开始检查证书 ==="',
+      '',
+      '# 有泛域名证书就什么都不用做 —— 一张覆盖全部，也没有签发数量上限',
+      `if [ -f /etc/letsencrypt/live/${gw.webDomain}/fullchain.pem ]; then`,
+      '  echo "已有泛域名证书，跳过"; exit 0',
+      'fi',
+      '',
+      'command -v certbot >/dev/null || { echo "网关上没装 certbot，签不了证书"; exit 1; }',
+      '',
+      '# Nginx 按 SNI 取证书时，读文件的是 worker 进程（非 root），',
+      '# 而 certbot 签出来的私钥是 0600 root。开一个专用组，只把',
+      '# 这些二级域名的证书放进去 —— 机器上其它站点的证书一律不动。',
+      "NGXUSER=$(awk '$1==\"user\"{print $2}' /etc/nginx/nginx.conf | tr -d ';' | head -1)",
+      'NGXUSER=${NGXUSER:-www-data}',
+      'groupadd -f panel-nat-certs',
+      'id -nG "$NGXUSER" | grep -qw panel-nat-certs || usermod -aG panel-nat-certs "$NGXUSER"',
+      '# 父目录只给「能穿过去」，不给「能列出来」',
+      'chgrp panel-nat-certs /etc/letsencrypt/live /etc/letsencrypt/archive 2>/dev/null',
+      'chmod g+x /etc/letsencrypt/live /etc/letsencrypt/archive 2>/dev/null',
+      '',
+      'fixperm() {',
+      '  for D in /etc/letsencrypt/live/$1 /etc/letsencrypt/archive/$1; do',
+      '    [ -d "$D" ] || continue',
+      '    chgrp -R panel-nat-certs "$D"; chmod -R g+rX "$D"',
+      '  done',
+      '}',
+      '',
+      'NEW=0',
+      'for H in ' + (hosts.length ? hosts.join(' ') : '""') + '; do',
+      '  [ -z "$H" ] && continue',
+      '  if [ ! -f /etc/letsencrypt/live/$H/fullchain.pem ]; then',
+      '    echo "签 $H"',
+      '    if certbot certonly --webroot -w /var/www/certbot -d "$H" ' +
+        '--agree-tos --register-unsafely-without-email --non-interactive --quiet; then',
+      '      NEW=1; echo "  好了"',
+      '    else',
+      '      echo "  没签下来，下次下发再试"; continue',
+      '    fi',
+      '  fi',
+      '  # 续期会重新生成文件并还原成 0600 root，所以每次都重新放权一遍',
+      '  fixperm "$H"',
+      'done',
+      '',
+      '# 续期之后也要放权，装一个 certbot 的部署钩子',
+      'mkdir -p /etc/letsencrypt/renewal-hooks/deploy',
+      "cat > /etc/letsencrypt/renewal-hooks/deploy/panel-nat-perms.sh <<'HOOK'",
+      '#!/bin/bash',
+      '# 由 VPS 面板装的：续期后把 NAT 二级域名证书的读权限还给 nginx worker',
+      'for D in $RENEWED_LINEAGE; do',
+      '  N=$(basename "$D")',
+      `  case "$N" in m*.${gw.webDomain}) ;; *) continue ;; esac`,
+      '  chgrp -R panel-nat-certs "$D" /etc/letsencrypt/archive/"$N" 2>/dev/null',
+      '  chmod -R g+rX "$D" /etc/letsencrypt/archive/"$N" 2>/dev/null',
+      'done',
+      'nginx -t && nginx -s reload',
+      'HOOK',
+      'chmod 750 /etc/letsencrypt/renewal-hooks/deploy/panel-nat-perms.sh',
+      '',
+      '# 只有真签出新证书才 reload，省得每次下发都白抖一下 nginx',
+      'if [ "$NEW" = "1" ]; then nginx -t && nginx -s reload && echo "nginx 已重载"; fi',
+      'echo "=== 完 ==="',
+      '',
+    ];
+    return L.join(NL);
   }
 
   /**
