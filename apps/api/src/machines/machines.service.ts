@@ -145,14 +145,17 @@ export class MachinesService {
   /**
    * 疑似残留实例。
    *
-   * 这些机器在云上有标识（说明我们确实发过创建指令），但销毁从来没有确认成功。
+   * 这些机器在上游有标识（说明我们确实发过创建指令），但销毁从来没有确认成功。
    * 换句话说：**它们可能正在你的云账号上按小时烧钱，而面板已经把它们当废弃了。**
    * 这个列表应该定期看，尤其在一批建机失败之后。
+   *
+   * Proxmox 也算在内：自建节点虽然不按小时收钱，但残留的虚拟机一样占着
+   * 你的内存和磁盘，而且因为不在告警里，后台根本看不见 —— 只会越攒越多。
    */
   async suspectedOrphans() {
     const rows = await this.prisma.machine.findMany({
       where: {
-        provider: { in: [ProviderKind.gcp, ProviderKind.lightsail] },
+        provider: { in: [ProviderKind.gcp, ProviderKind.lightsail, ProviderKind.proxmox] },
         providerRefJson: { not: Prisma.DbNull },
         releasedAt: null,
         status: { in: [MachineStatus.error, MachineStatus.releasing] },

@@ -430,7 +430,11 @@ export class PlansService {
           `可用区写错了：${spec.availabilityZone}。要带结尾字母，比如 ap-southeast-1a`,
         );
       }
-      if (!spec.staticIp) {
+      // 「固定公网 IP」只对云厂商有意义 —— 自建 Proxmox 的地址由你自己的
+      // 地址池分配，本来就是固定的，这里不该拦。
+      const hasStaticIpConcept =
+        dto.provider === ProviderKind.gcp || dto.provider === ProviderKind.lightsail;
+      if (hasStaticIpConcept && !spec.staticIp) {
         // 不是错误，但后果严重到必须让人知道，所以用报错的方式逼他确认
         throw new BadRequestException(
           '这个套餐没开「固定公网 IP」。不开的话用户每次重装系统 IP 都会变，是投诉重灾区。' +

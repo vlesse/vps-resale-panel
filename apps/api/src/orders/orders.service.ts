@@ -474,8 +474,9 @@ export class OrdersService {
       throw new BadRequestException('已经有一个开通任务在跑了，等它结束');
     }
 
-    // 上一次失败留下的 service 占位要复用，不能再建一个
-    const { jobId } = await this.provisioning.startProvision(order.id);
+    // 上一次失败留下的 service 占位要复用，但任务要新建一个 ——
+    // 沿用旧任务号的话，队列会按 ID 去重把这次重试丢掉。
+    const { jobId } = await this.provisioning.startProvision(order.id, { force: true });
     await this.queue.enqueue(jobId);
     return { ok: true, message: '已重新排队开通', jobId: jobId.toString() };
   }

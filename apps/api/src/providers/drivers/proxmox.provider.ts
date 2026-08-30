@@ -33,6 +33,13 @@ import { probeMachine, setRootPassword, sleep, sshExec, waitForSsh } from '../ss
  * 用 WireGuard / Tailscale 把面板和它打通，**不要把 8006 裸奔到公网上**。
  */
 
+/** 从 172.31.0.0/24 这种写法里取掩码位数，取不到就按 /24 */
+function maskBitsOf(cidr?: string): number {
+  const m = /\/(\d{1,2})$/.exec(cidr ?? '');
+  const n = m ? Number(m[1]) : 24;
+  return n >= 8 && n <= 30 ? n : 24;
+}
+
 interface ProxmoxSpec {
   /** cloud-init 模板机的 VMID。要做「真重装」必须配。 */
   templateVmid?: number;
@@ -44,6 +51,18 @@ interface ProxmoxSpec {
   cores?: number;
   memoryMb?: number;
   enableBbr?: boolean;
+
+  /**
+   * NAT 地址池，比如 172.31.0.0/24。配了就由面板分配固定内网地址，
+   * 不再靠 qemu-guest-agent 上报 —— 云镜像默认不装那个组件，靠它会卡死在
+   * 「等虚拟机拿到 IP」。而且要做端口映射，本来就必须知道每台机器的地址。
+   */
+  ipPool?: string;
+  /** 地址池的网关，一般就是网桥自己的地址，比如 172.31.0.1 */
+  gateway?: string;
+  nameserver?: string;
+  /** 由上层分配好传进来的具体地址，形如 172.31.0.5 */
+  assignedIp?: string;
 }
 
 @Injectable()
@@ -138,6 +157,11 @@ export class ProxmoxProvider implements VpsProvider {
     const nextId = await http.get('/cluster/nextid');
     const vmid = Number(nextId.data?.data);
 
+    // 一拿到 vmid 就落库，**必须在下达克隆指令之前**。
+    // 少了这一步，克隆之后任何一步失败，回滚都不知道该销毁谁 ——
+    // PVE 上就会留下一台还在跑、吃着内存和磁盘、而面板毫不知情的虚拟机。
+    await req.onRefKnown?.({ node, vmid });
+
     await progress(20, '从模板克隆虚拟机');
     const cloneRes = await http.post(`/nodes/${node}/qemu/${spec.templateVmid}/clone`, {
       newid: vmid,
@@ -154,7 +178,10 @@ export class ProxmoxProvider implements VpsProvider {
       ciuser: 'root',
       cipassword: req.password,
       sshkeys: encodeURIComponent(req.publicKeyOpenssh),
-      ipconfig0: 'ip=dhcp',
+      ipconfig0: spec.assignedIp
+        ? `ip=${spec.assignedIp}/${maskBitsOf(spec.ipPool)},gw=${spec.gateway ?? ''}`
+        : 'ip=dhcp',
+      ...(spec.nameserver ? { nameserver: spec.nameserver } : {}),
       ...(spec.cores ? { cores: spec.cores } : {}),
       ...(spec.memoryMb ? { memory: spec.memoryMb } : {}),
       ...(spec.bridge ? { net0: `virtio,bridge=${spec.bridge}` } : {}),
@@ -164,8 +191,15 @@ export class ProxmoxProvider implements VpsProvider {
     const startRes = await http.post(`/nodes/${node}/qemu/${vmid}/status/start`);
     await this.waitTask(http, node, startRes.data?.data, 120000);
 
-    await progress(75, '等待虚拟机拿到 IP');
-    const ip = await this.waitForIp(http, node, vmid, 180000);
+    // 地址是我们自己分配的就不用问虚拟机要 —— 直接用，省掉对 guest agent 的依赖
+    let ip: string;
+    if (spec.assignedIp) {
+      ip = spec.assignedIp;
+      await progress(75, '使用面板分配的内网地址 ' + ip);
+    } else {
+      await progress(75, '等待虚拟机拿到 IP');
+      ip = await this.waitForIp(http, node, vmid, 180000);
+    }
 
     const ref: ProxmoxRef = { node, vmid };
     const auth = {

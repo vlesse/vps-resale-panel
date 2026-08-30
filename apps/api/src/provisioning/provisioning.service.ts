@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   BillingCycle,
@@ -56,14 +56,26 @@ export class ProvisioningService {
    * 支付成功后调这个。它只负责建占位记录和任务，不做任何耗时操作 ——
    * 支付平台的回调有超时限制，拖久了它会重发，重发会导致重复建机。
    */
-  async startProvision(orderId: bigint): Promise<{ serviceId: bigint; jobId: bigint }> {
+  /**
+   * @param force 管理员手工重试时传 true。
+   *
+   * 平时那道幂等保护（订单已有任务就返回旧任务号）是为了挡支付平台重发回调，
+   * 但它会让「重试开通」彻底失效：返回的是已经失败的旧任务号，
+   * 而队列按 provision-<id> 去重、失败的任务又要在 Redis 里留七天，
+   * 于是重新入队被静默丢弃 —— 后台提示「已重新排队」，实际什么都没发生。
+   * 用户付了钱、开通失败，就再也救不回来了。
+   */
+  async startProvision(
+    orderId: bigint,
+    opts: { force?: boolean } = {},
+  ): Promise<{ serviceId: bigint; jobId: bigint }> {
     const order = await this.prisma.order.findUniqueOrThrow({
       where: { id: orderId },
       include: { plan: true, service: true },
     });
 
     // 幂等：支付平台重发回调时不能建出第二台机器
-    if (order.service) {
+    if (order.service && !opts.force) {
       const existing = await this.prisma.provisionJob.findFirst({
         where: { orderId, kind: JobKind.provision },
         orderBy: { id: 'desc' },
@@ -71,6 +83,16 @@ export class ProvisioningService {
       if (existing) {
         this.logger.warn(`订单 ${order.orderNo} 已经有建机任务，跳过重复入队`);
         return { serviceId: order.service.id, jobId: existing.id };
+      }
+    }
+
+    if (opts.force) {
+      // 重试前确认没有任务正在跑，避免同一笔订单建出两台机器
+      const live = await this.prisma.provisionJob.findFirst({
+        where: { orderId, kind: JobKind.provision, status: { in: [JobStatus.queued, JobStatus.running] } },
+      });
+      if (live) {
+        throw new BadRequestException('已经有一个开通任务在跑了，等它结束再重试');
       }
     }
 
@@ -238,9 +260,19 @@ export class ProvisioningService {
     const driver = this.registry.get(plan.provider);
     const ctx = this.registry.contextFor(machine, plan.cloudAccount);
 
+    const spec = this.effectiveSpec(plan, order.customSpecJson);
+    // NAT 套餐：地址由面板分配，不靠虚拟机自己上报
+    if (spec.ipPool && !spec.assignedIp) {
+      spec.assignedIp = await this.allocateNatIp(spec.ipPool, spec.gateway);
+      await this.prisma.machine.update({
+        where: { id: machine.id },
+        data: { ip: spec.assignedIp },
+      });
+    }
+
     const req: ProvisionRequest = {
       code: machine.code,
-      spec: this.effectiveSpec(plan, order.customSpecJson),
+      spec,
       hostname: machine.code.toLowerCase(),
       password,
       publicKeyOpenssh: keypair.publicKeyOpenssh,
@@ -543,6 +575,37 @@ export class ProvisioningService {
    * 用户实际选的存在订单上 —— 必须以订单为准，否则他花 8 核的钱拿到 2 核。
    * 重装走的也是这里，所以重装出来的规格和当初买的一致。
    */
+  /**
+   * 从 NAT 地址池里挑一个还没被占用的地址。
+   *
+   * 以数据库里的 machines.ip 为准。并发下单时两个任务理论上可能挑到同一个，
+   * 但建机队列是串行的，真要横向扩多个 worker 时这里得换成数据库唯一约束。
+   */
+  private async allocateNatIp(pool: string, gateway?: string): Promise<string> {
+    const m = /^(\d+)\.(\d+)\.(\d+)\.\d+\/(\d{1,2})$/.exec(pool.trim());
+    if (!m) throw new Error(`NAT 地址池写错了：${pool}。应该形如 172.31.0.0/24`);
+    const [, a, b, c, bits] = m;
+    const size = 2 ** (32 - Number(bits));
+    if (size > 1024) throw new Error('NAT 地址池太大了，最多 /22');
+
+    const used = new Set(
+      (
+        await this.prisma.machine.findMany({
+          where: { ip: { startsWith: `${a}.${b}.${c}.` }, releasedAt: null },
+          select: { ip: true },
+        })
+      ).map((x) => x.ip),
+    );
+    if (gateway) used.add(gateway);
+
+    // .0 是网络号、最后一个是广播地址，都跳过
+    for (let i = 2; i < size - 1; i++) {
+      const ip = `${a}.${b}.${c}.${i}`;
+      if (!used.has(ip)) return ip;
+    }
+    throw new Error(`NAT 地址池 ${pool} 已经分完了，扩大网段或者先回收一些机器`);
+  }
+
   private effectiveSpec(
     plan: { providerSpecJson: Prisma.JsonValue; isCustom?: boolean; customConfigJson?: Prisma.JsonValue },
     customSpecJson: Prisma.JsonValue,
