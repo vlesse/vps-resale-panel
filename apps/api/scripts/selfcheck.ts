@@ -282,6 +282,43 @@ console.log('\n[9] USDT —— 算错了要么少收钱，要么两张单撞一�
   check('小于 1 也正确', u.format(137932n) === '0.137932', u.format(137932n));
 }
 
+console.log('\n[10] 网关返回的字段分类 —— 分错了用户点付款什么都不出来');
+{
+  const j = new JeepayDriver();
+  const pick = (d: any) => {
+    const c = [d.payUrl, d.payData, d.codeUrl, d.qrCode].filter(
+      (v: any) => typeof v === 'string' && v.length > 0,
+    );
+    const nav = (v: string) => /^[a-z][a-z0-9+.-]*:\/\//i.test(v.trim());
+    return { payUrl: c.find(nav), codeUrl: c.find((v: string) => !nav(v)) };
+  };
+
+  // 真实案例：柬埔寨 ABA 的 EMV 二维码放在 payData 里，没有 payUrl。
+  // 以前按字段名分，它被当成跳转地址，前端 location.href 过去浏览器当场卡住。
+  const emv =
+    '00020101021130510016abaakhppxxx@abaa01151260715094150370208ABA Bank' +
+    '5204783253031165802KH5909JI YANLIN6010Phnom Penh6304DDE7';
+  const r1 = pick({ payData: emv });
+  check('EMV 二维码不能被当成跳转地址', r1.payUrl === undefined);
+  check('EMV 二维码要当成二维码内容', r1.codeUrl === emv);
+
+  const r2 = pick({ payUrl: 'https://pay.example.com/cashier/abc' });
+  check('http 地址认成跳转', r2.payUrl === 'https://pay.example.com/cashier/abc');
+  check('认成跳转就不该再当二维码', r2.codeUrl === undefined);
+
+  const r3 = pick({ payData: 'weixin://wxpay/bizpayurl?pr=abc' });
+  check('唤起 App 的 scheme 也算跳转', r3.payUrl === 'weixin://wxpay/bizpayurl?pr=abc');
+
+  const r4 = pick({ payUrl: 'https://pay.example.com/x', payData: emv });
+  check('两种都有时各归各位', r4.payUrl === 'https://pay.example.com/x' && r4.codeUrl === emv);
+
+  const r5 = pick({ codeUrl: 'weixin://wxpay/bizpayurl?pr=zz' });
+  check('二维码字段里放了 scheme 也认成跳转', r5.payUrl === 'weixin://wxpay/bizpayurl?pr=zz');
+
+  check('空返回不炸', pick({}).payUrl === undefined && pick({}).codeUrl === undefined);
+  void j;
+}
+
 console.log(failed === 0 ? '\n全部通过\n' : `\n有 ${failed} 项没过\n`);
 process.exit(failed === 0 ? 0 : 1);
 

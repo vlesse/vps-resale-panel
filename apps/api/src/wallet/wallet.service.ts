@@ -271,7 +271,19 @@ export class WalletService {
 
     // 已经入过账的直接返回，回调重发不能重复加钱。
     if (row.status === RechargeStatus.paid) {
-      this.logger.log(`充值单 ${rechargeNo} 已经入过账，跳过重复处理`);
+      // 但要分清「同一笔的重发」和「真的付了两次」。
+      // 面板给网关的商户单号每次提交都带新后缀，所以用户有可能把
+      // 同一张充值单的两个二维码都扫了 —— 那是两笔真钱，只入账了一笔。
+      // 这种情况必须吼出来，等着人工退一笔或者补一笔。
+      if (payment.upstreamNo && row.upstreamNo && payment.upstreamNo !== row.upstreamNo) {
+        this.logger.error(
+          `充值单 ${rechargeNo} 收到了第二笔付款！已入账的是 ${row.upstreamNo}，` +
+            `这一笔是 ${payment.upstreamNo}，金额 ${fmt(row.amountCents)}。` +
+            `钱进来了但没有二次入账，需要人工处理（退回或补上）。`,
+        );
+      } else {
+        this.logger.log(`充值单 ${rechargeNo} 已经入过账，跳过重复处理`);
+      }
       return { ok: true, message: '这笔充值已经处理过了' };
     }
 

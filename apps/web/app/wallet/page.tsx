@@ -53,6 +53,21 @@ const RECHARGE_STATUS: Record<Recharge['status'], { label: string; tone: string 
   expired: { label: '已超时', tone: 'mute' },
 };
 
+/**
+ * 只有真的是个能跳转的地址才跳。
+ *
+ * 网关有时会把二维码内容放在 payUrl 里（EMV 那种 0002010102… 的长串）。
+ * 不判一下就 location.href，浏览器会当成相对路径去跳，结果是页面一动不动、
+ * 也没有任何报错 —— 用户以为点了没反应。
+ */
+function navigate(url?: string): boolean {
+  const u = (url ?? '').trim();
+  // 用 includes('://') 而不是在正则里转义斜杠 —— 少一处能写错的地方
+  if (!u || !u.includes('://') || !/^[a-z][a-z0-9+.-]*:/i.test(u)) return false;
+  window.location.href = u;
+  return true;
+}
+
 /** 常用面额。自己填也行，这几个只是省得敲。 */
 const PRESETS = [1000, 5000, 10000, 20000, 50000, 100000];
 
@@ -134,6 +149,10 @@ export default function WalletPage() {
     };
   }, [pending, tick, sum?.balanceCents, load]);
 
+  const payRef = useRef<HTMLDivElement | null>(null);
+  const scrollToPay = () =>
+    setTimeout(() => payRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60);
+
   const cents = Math.round(Number(amountYuan) * 100);
 
   const startRecharge = async () => {
@@ -149,7 +168,10 @@ export default function WalletPage() {
           channel: picked,
         });
         setPayInfo(info);
-        if (info.payUrl) window.location.href = info.payUrl;
+        // 跳不了（比如拿到的是二维码内容）就把付款指引滚到眼前。
+        // 它渲染在「充值」卡片下面，小屏上正好在折叠线以下 ——
+        // 不滚过去的话用户看不到任何变化，只会以为点了没反应。
+        if (!navigate(info.payUrl)) scrollToPay();
       }
       await load();
     } catch (e: any) {
@@ -170,7 +192,7 @@ export default function WalletPage() {
         channel: picked,
       });
       setPayInfo(info);
-      if (info.payUrl) window.location.href = info.payUrl;
+      if (!navigate(info.payUrl)) scrollToPay();
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -298,7 +320,7 @@ export default function WalletPage() {
         </div>
       </Unit>
 
-      {payInfo && <PayPanel info={payInfo} />}
+      <div ref={payRef}>{payInfo && <PayPanel info={payInfo} />}</div>
 
       {pending && tick >= MAX_TICKS && (
         <Unit>

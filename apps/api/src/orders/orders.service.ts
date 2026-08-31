@@ -308,8 +308,23 @@ export class OrdersService {
     if (!order) throw new NotFoundException(`订单 ${orderNo} 不存在`);
 
     if (order.status !== OrderStatus.pending_payment) {
-      // 已经处理过了，直接回成功让支付平台别再重发
-      this.logger.log(`订单 ${orderNo} 状态已是 ${order.status}，跳过重复处理`);
+      // 分清「同一笔的重发」和「真的付了两次」。给网关的商户单号每次提交
+      // 都带新后缀，用户有可能把同一张订单的两个二维码都扫了 —— 那是两笔真钱。
+      const paid = order.payments.find((p) => p.status === 'success');
+      if (payment.upstreamNo && paid?.upstreamNo && payment.upstreamNo !== paid.upstreamNo) {
+        this.logger.error(
+          `订单 ${orderNo} 收到了第二笔付款！已入账的是 ${paid.upstreamNo}，` +
+            `这一笔是 ${payment.upstreamNo}。钱进来了但没有二次记账，需要人工退款。`,
+        );
+        await this.prisma.order
+          .update({
+            where: { id: order.id },
+            data: { adminRemark: `疑似重复付款，第二笔上游单号 ${payment.upstreamNo}，需人工核对退款`.slice(0, 255) },
+          })
+          .catch(() => undefined);
+      } else {
+        this.logger.log(`订单 ${orderNo} 状态已是 ${order.status}，跳过重复处理`);
+      }
       return { ok: true, message: '订单已处理过' };
     }
 

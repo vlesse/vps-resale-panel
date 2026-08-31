@@ -189,7 +189,7 @@ export class PaymentsService {
         const result = await this.jeepay.createPayment(
           { ...cred, gatewayUrl: channel.gatewayUrl || cred.gatewayUrl },
           {
-            orderNo: target.no,
+            orderNo: this.gatewayNo(target.no),
             amountCents: this.convertAmount(target.amountCents, target.currency, channel),
             currency: channel.settleCurrency || target.currency,
             wayCode: channel.wayCode || '',
@@ -214,7 +214,7 @@ export class PaymentsService {
         const cred = decryptJson<EpayCredentials>(this.secret(), channel.credentialsEncrypted);
         const full = { ...cred, gatewayUrl: channel.gatewayUrl || cred.gatewayUrl };
         const req = {
-          orderNo: target.no,
+          orderNo: this.gatewayNo(target.no),
           amountCents: this.convertAmount(target.amountCents, target.currency, channel),
           payType: channel.wayCode || 'alipay',
           subject: target.subject,
@@ -246,6 +246,27 @@ export class PaymentsService {
       default:
         throw new BadRequestException(`不认识的支付驱动 ${channel.driver}`);
     }
+  }
+
+  /**
+   * 提交给网关的商户单号。
+   *
+   * 我们自己的单号（RCH… / ORD…）是复用的：用户点五次充值只会有一张单，
+   * 免得他付了其中一张、剩下四张挂在那让人以为没付成功。但网关那边
+   * **同一个商户单号只收一次** —— 第二次提交直接回「商户订单已存在」，
+   * 用户看到的就是点了没反应。
+   *
+   * 所以给网关的号后面挂一个时间戳后缀，每次提交都是新的；
+   * 回调回来时把后缀削掉就还原成我们自己的单号。单号本身只有数字和
+   * 十六进制字符，不含 `-`，所以按第一个 `-` 切是安全的。
+   */
+  private gatewayNo(no: string): string {
+    return `${no}-${Date.now().toString(36).slice(-6)}`;
+  }
+
+  /** 回调里带回来的号削掉后缀，还原成我们自己的单号 */
+  private ownNo(gatewayNo: string): string {
+    return String(gatewayNo).split('-')[0];
   }
 
   private returnUrl(target: PayTarget): string {
@@ -669,7 +690,7 @@ export class PaymentsService {
    * 验签不过一律拒绝，绝不能因为「看着像成功」就放行。
    */
   async handleJeepayNotify(body: Record<string, any>): Promise<string> {
-    return this.handleNotify('jeepay', String(body?.mchOrderNo ?? ''), body, (cred, params) =>
+    return this.handleNotify('jeepay', this.ownNo(body?.mchOrderNo ?? ''), body, (cred, params) =>
       this.jeepay.parseNotify(params, cred as JeepayCredentials),
     );
   }
@@ -681,7 +702,7 @@ export class PaymentsService {
    * 回别的内容它会认为失败并反复重发，用户那边就一直显示未支付。
    */
   async handleEpayNotify(params: Record<string, any>): Promise<string> {
-    return this.handleNotify('epay', String(params?.out_trade_no ?? ''), params, (cred, p) =>
+    return this.handleNotify('epay', this.ownNo(params?.out_trade_no ?? ''), params, (cred, p) =>
       this.epay.parseNotify(p, cred as EpayCredentials),
     );
   }

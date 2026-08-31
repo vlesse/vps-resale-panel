@@ -21,6 +21,21 @@ interface OrderDetail extends OrderItem {
   provisioning?: { status: string; progress: number; step: string | null; error: string | null } | null;
 }
 
+/**
+ * 只有真的是个能跳转的地址才跳。
+ *
+ * 网关有时会把二维码内容放在 payUrl 里（EMV 那种 0002010102… 的长串）。
+ * 不判一下就 location.href，浏览器会当成相对路径去跳，结果是页面一动不动、
+ * 也没有任何报错 —— 用户以为点了没反应。
+ */
+function navigate(url?: string): boolean {
+  const u = (url ?? '').trim();
+  // 用 includes('://') 而不是在正则里转义斜杠 —— 少一处能写错的地方
+  if (!u || !u.includes('://') || !/^[a-z][a-z0-9+.-]*:/i.test(u)) return false;
+  window.location.href = u;
+  return true;
+}
+
 export function Checkout({ orderNo }: { orderNo: string }) {
   const router = useRouter();
   const [order, setOrder] = useState<OrderDetail | null>(null);
@@ -32,6 +47,7 @@ export function Checkout({ orderNo }: { orderNo: string }) {
   const [busy, setBusy] = useState(false);
   const [left, setLeft] = useState<number | null>(null);
   const poll = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const payRef = useRef<HTMLDivElement | null>(null);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -95,7 +111,9 @@ export function Checkout({ orderNo }: { orderNo: string }) {
       // 余额支付是当场扣款当场成交，没有跳转也没有二维码，
       // 直接把状态刷新出来，让用户看见「已到账，正在开通」
       if (r.kind === 'paid') await loadStatus();
-      if (r.payUrl) window.location.href = r.payUrl;
+      if (!navigate(r.payUrl)) {
+        setTimeout(() => payRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60);
+      }
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -283,7 +301,7 @@ export function Checkout({ orderNo }: { orderNo: string }) {
       )}
 
       {/* 付款指引：扫码 / USDT / 线下转账，和充值页共用同一套 */}
-      {!paid && payInfo && <PayPanel info={payInfo} />}
+      <div ref={payRef}>{!paid && payInfo && <PayPanel info={payInfo} />}</div>
 
       <Unit>
         <div className="panelbody">

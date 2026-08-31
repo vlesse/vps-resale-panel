@@ -131,13 +131,21 @@ export class JeepayDriver {
     }
 
     const d = data.data ?? {};
-    return {
-      payOrderId: d.payOrderId,
-      // 不同通道把二维码放在不同字段里，挨个找
-      codeUrl: d.codeUrl ?? d.payData ?? d.qrCode,
-      payUrl: d.payUrl ?? d.payData,
-      raw: d,
-    };
+
+    // 网关把「跳转地址」和「二维码内容」塞在哪个字段，各家不一样，
+    // 而且**同一个字段两种都可能**：payData 有时是 https://…，
+    // 有时是一长串 EMV 二维码数据（00020101021130…）。
+    //
+    // 所以不能按字段名分，得看内容长什么样。以前按字段名分的时候，
+    // 二维码数据被当成了跳转地址，前端一句 location.href = 那串数字，
+    // 浏览器当场卡住 —— 用户点了付款什么都不出来，也没有任何报错。
+    const candidates = [d.payUrl, d.payData, d.codeUrl, d.qrCode].filter(
+      (v): v is string => typeof v === 'string' && v.length > 0,
+    );
+    const payUrl = candidates.find(isNavigable);
+    const codeUrl = candidates.find((v) => !isNavigable(v));
+
+    return { payOrderId: d.payOrderId, codeUrl, payUrl, raw: d };
   }
 
   /**
@@ -218,6 +226,12 @@ export class JeepayDriver {
 
   private explainGateway(data: any): string {
     const msg = data?.msg ?? data?.message ?? '未知错误';
+    // 这条要排在「商户」前面：它的原文里也带「商户订单」四个字，
+    // 放后面会被下面那条抢走，然后提示你去检查商户号 —— 查半天查不出问题。
+    if (/已存在|重复|duplicate/i.test(msg)) {
+      return `网关说这个订单号提交过了：${msg}。同一个商户单号只能提交一次，` +
+        `面板会自动给每次提交加后缀，出现这条说明后缀没生效`;
+    }
     if (/签名|sign/i.test(msg)) {
       return `支付网关说签名错误：${msg}。检查应用密钥（appSecret）是不是抄错了或者前后有空格`;
     }
@@ -229,4 +243,15 @@ export class JeepayDriver {
     }
     return `支付网关拒绝了这笔订单：${msg}`;
   }
+}
+
+/**
+ * 这个字符串能不能直接丢给浏览器跳转。
+ *
+ * 只认带 `scheme://` 的：http(s) 是网页收银台，weixin:// alipays:// 这类
+ * 是唤起 App。二维码内容（EMV 那种 `0002010102…`）没有 scheme，
+ * 会被这里挡下来，交给前端画成二维码给人扫。
+ */
+function isNavigable(v: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(v.trim());
 }
