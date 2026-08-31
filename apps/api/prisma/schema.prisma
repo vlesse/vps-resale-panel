@@ -748,6 +748,16 @@ model UsdtIntent {
   /// 要求转账的精确金额，单位是 USDT 的最小单位（1 USDT = 1000000）
   amountUnits BigInt @map("amount_units")
 
+  /// 「这个地址上这个金额正被占用」的唯一键，形如 <地址>:<金额>。
+  ///
+  /// 只在 pending 时有值，结束后置 NULL。MySQL 的唯一索引允许多个 NULL，
+  /// 所以历史记录不会互相冲突，而同一时刻同一地址上不可能出现两个相同金额。
+  ///
+  /// 光靠代码里「先查已占用的再挑一个」挡不住并发：两个请求同时读到同一份
+  /// 已占用列表，就可能挑到同一个金额，然后一笔转账对上两张单 —— 其中一张
+  /// 的用户付了钱永远等不到。这道约束是数据库层面的最后一道闸。
+  activeKey String? @unique @map("active_key") @db.VarChar(96)
+
   /// 这笔订单原本的价钱，退款和对账时要看
   sourceAmountCents Int          @map("source_amount_cents")
   sourceCurrency    CurrencyCode @map("source_currency")

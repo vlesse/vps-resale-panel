@@ -18,6 +18,8 @@ import { buildBootstrapScript } from '../src/providers/bootstrap.util';
 import { toInstanceName } from '../src/providers/provider.types';
 import { parseProbeOutput } from '../src/providers/ssh-exec.util';
 import { JeepayDriver } from '../src/payments/drivers/jeepay.driver';
+import { EpayDriver } from '../src/payments/drivers/epay.driver';
+import { UsdtDriver } from '../src/payments/drivers/usdt.driver';
 
 let failed = 0;
 const check = (name: string, ok: boolean, extra = '') => {
@@ -172,6 +174,113 @@ check('验签不过时 valid=false 且 success=false', (() => {
   const r = jee.parseNotify({ ...notifyBase, state: 2, sign: 'FAKE' }, { appSecret: KEY } as any);
   return !r.valid && !r.success;
 })());
+
+console.log('\n[8] 易支付签名 —— 和 Jeepay 有三处不一样，每处都够调半天');
+{
+  const epay = new EpayDriver();
+  const KEY = 'MYSECRETKEY';
+  const base = 'money=47.00&name=HK-Basic&notify_url=https://vps.example.com/n' +
+    '&out_trade_no=ORD2026083012345&pid=1001&type=alipay&zero=0';
+  const p: Record<string, any> = {
+    pid: '1001',
+    type: 'alipay',
+    out_trade_no: 'ORD2026083012345',
+    notify_url: 'https://vps.example.com/n',
+    return_url: '',
+    name: 'HK-Basic',
+    money: '47.00',
+    zero: 0,
+  };
+  const sign = epay.sign(p, KEY);
+
+  // 手工按规则算一遍：非空、非 sign/sign_type，按 ASCII 排序，拼成 k=v&k=v，
+  // 末尾**直接**接密钥（不是 &key=），整串 MD5 转小写
+  const expect = createHash('md5').update(base + KEY, 'utf8').digest('hex');
+  check('签名与手工按规则计算的结果一致', sign === expect, sign.slice(0, 16) + '…');
+  check('结果是小写十六进制', sign === sign.toLowerCase());
+  check(
+    '密钥是直接接尾，不是 &key=',
+    sign !== createHash('md5').update(base + '&key=' + KEY, 'utf8').digest('hex'),
+  );
+  check('值为 0 的参数必须参与签名', epay.sign({ ...p, zero: 1 }, KEY) !== sign);
+  check('空字符串参数必须排除', epay.sign({ ...p, return_url: undefined }, KEY) === sign);
+  check('sign_type 不参与签名', epay.sign({ ...p, sign_type: 'MD5' }, KEY) === sign);
+  check(
+    '参数顺序不影响结果',
+    epay.sign(Object.fromEntries(Object.entries(p).reverse()), KEY) === sign,
+  );
+  check('自己签的自己能验过', epay.verify({ ...p, sign, sign_type: 'MD5' }, KEY));
+  check('换个密钥验不过', !epay.verify({ ...p, sign }, 'OTHERKEY'));
+  check('改了金额验不过', !epay.verify({ ...p, money: '1.00', sign }, KEY));
+  check('没有 sign 字段直接拒绝', !epay.verify(p, KEY));
+  check('签名长度不对不抛错只返回 false', !throws(() => epay.verify({ ...p, sign: 'abc' }, KEY)));
+
+  const cred = { gatewayUrl: '', pid: '1001', key: KEY };
+  const okBody = { ...p, trade_status: 'TRADE_SUCCESS', trade_no: 'T1' };
+  const ok = epay.parseNotify({ ...okBody, sign: epay.sign(okBody, KEY) }, cred);
+  check('TRADE_SUCCESS 判定为成功', ok.valid && ok.success);
+  check('金额从「元」正确换回「分」', ok.amountCents === 4700, String(ok.amountCents));
+
+  const waitBody = { ...p, trade_status: 'WAIT_BUYER_PAY' };
+  const bad = epay.parseNotify({ ...waitBody, sign: epay.sign(waitBody, KEY) }, cred);
+  check('非 TRADE_SUCCESS 不能判成成功', bad.valid && !bad.success);
+
+  // 这一处是浮点陷阱：19.99 * 100 在 JS 里是 1998.9999999999998，截断就少一分
+  const fBody = { money: '19.99', trade_status: 'TRADE_SUCCESS', out_trade_no: 'X' };
+  const f = epay.parseNotify({ ...fBody, sign: epay.sign(fBody, KEY) }, cred);
+  check('19.99 元换成分不能少一分', f.amountCents === 1999, String(f.amountCents));
+}
+
+console.log('\n[9] USDT —— 算错了要么少收钱，要么两张单撞一个金额');
+{
+  const u = new UsdtDriver();
+  check('T 开头 34 位是合法地址', u.isValidAddress('TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'));
+  check('0x 开头的以太坊地址要拒绝', !u.isValidAddress('0x1234567890123456789012345678901234567890'));
+  check('少一位要拒绝', !u.isValidAddress('TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6'));
+  check('空字符串要拒绝', !u.isValidAddress(''));
+
+  check('美元订单 1:1 换算', u.toUsdtUnits(999, 'USD') === 9990000n, u.format(u.toUsdtUnits(999, 'USD')));
+  check(
+    '人民币订单按汇率换算',
+    u.format(u.toUsdtUnits(4700, 'CNY', 7.25)) === '6.482759',
+    u.format(u.toUsdtUnits(4700, 'CNY', 7.25)),
+  );
+  check('人民币订单没配汇率要报错', throws(() => u.toUsdtUnits(4700, 'CNY', null)));
+  check('汇率是 0 也要报错', throws(() => u.toUsdtUnits(4700, 'CNY', 0)));
+
+  // 取整方向：宁可多收 0.000001，也不能因为截断少收
+  let allUp = true;
+  for (const cents of [1, 3, 7, 99, 4700, 18600]) {
+    if (Number(u.toUsdtUnits(cents, 'CNY', 7.25)) / 1e6 < cents / 100 / 7.25) allUp = false;
+  }
+  check('换算一律向上取整（不能少收）', allUp);
+
+  const b = u.toUsdtUnits(4700, 'CNY', 7.25);
+  const taken = new Set<string>();
+  let dup = false;
+  for (let i = 0; i < 3000; i++) {
+    const a = u.pickUniqueAmount(b, taken);
+    if (taken.has(a.toString())) dup = true;
+    taken.add(a.toString());
+  }
+  check('连开 3000 笔待付款，金额零重复', !dup);
+  const arr = [...taken].map(BigInt);
+  check('只往上加不往下减（不能让用户少付）', arr.every((a) => a >= b));
+  const max = arr.reduce((x, y) => (x > y ? x : y));
+  check('加价不超过 0.01 USDT', Number(max - b) <= 10000, u.format(max - b));
+  check(
+    '金额分完了要报错，而不是发一个重复的出去',
+    throws(() => {
+      const full = new Set<string>();
+      for (let i = 0; i < 10000; i++) full.add((b + BigInt(i)).toString());
+      u.pickUniqueAmount(b, full);
+    }),
+  );
+
+  check('格式化去掉多余的 0', u.format(1500000n) === '1.5', u.format(1500000n));
+  check('整数不带小数点', u.format(7000000n) === '7', u.format(7000000n));
+  check('小于 1 也正确', u.format(137932n) === '0.137932', u.format(137932n));
+}
 
 console.log(failed === 0 ? '\n全部通过\n' : `\n有 ${failed} 项没过\n`);
 process.exit(failed === 0 ? 0 : 1);

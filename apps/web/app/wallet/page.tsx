@@ -69,6 +69,7 @@ export default function WalletPage() {
   const [error, setError] = useState<string | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [tick, setTick] = useState(0);
   const poll = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback(async () => {
@@ -103,11 +104,15 @@ export default function WalletPage() {
    * 有待付款时每 5 秒查一次余额。
    *
    * 网关支付有回调，USDT 是我们自己盯链 —— 两种都不会通知浏览器，
-   * 所以页面只能自己问。到账了就停，不能一直转着占用后端。
+   * 所以页面只能自己问。
+   *
+   * 有上限：最多问 6 分钟。用户开着这个页面去吃饭的话，一直轮询
+   * 既白占后端，也没有意义（真到账了刷新一下就看见了）。
    */
+  const MAX_TICKS = 72; // 72 × 5 秒 = 6 分钟
   useEffect(() => {
     if (poll.current) clearTimeout(poll.current);
-    if (!pending) return;
+    if (!pending || tick >= MAX_TICKS) return;
     poll.current = setTimeout(async () => {
       try {
         const before = sum?.balanceCents ?? 0;
@@ -115,18 +120,19 @@ export default function WalletPage() {
         if (s.balanceCents > before) {
           setPending(null);
           setPayInfo(null);
+          setTick(0);
           setFlash('充值已到账。');
-        } else {
-          setPending({ ...pending });
+          return;
         }
       } catch {
-        setPending({ ...pending });
+        // 网络抖一下不算数，继续下一轮
       }
+      setTick((n) => n + 1);
     }, 5000);
     return () => {
       if (poll.current) clearTimeout(poll.current);
     };
-  }, [pending, sum?.balanceCents, load]);
+  }, [pending, tick, sum?.balanceCents, load]);
 
   const cents = Math.round(Number(amountYuan) * 100);
 
@@ -137,6 +143,7 @@ export default function WalletPage() {
     try {
       const r = await api.post<Recharge>('/api/wallet/recharges', { amountCents: cents });
       setPending(r);
+      setTick(0);
       if (picked) {
         const info = await api.post<PayInfo>(`/api/payments/recharge/${r.rechargeNo}/pay`, {
           channel: picked,
@@ -158,6 +165,7 @@ export default function WalletPage() {
     setError(null);
     try {
       setPending(r);
+      setTick(0);
       const info = await api.post<PayInfo>(`/api/payments/recharge/${r.rechargeNo}/pay`, {
         channel: picked,
       });
@@ -291,6 +299,23 @@ export default function WalletPage() {
       </Unit>
 
       {payInfo && <PayPanel info={payInfo} />}
+
+      {pending && tick >= MAX_TICKS && (
+        <Unit>
+          <div className="panelbody">
+            <Notice tone="warn">
+              等了六分钟还没等到到账，页面先不自动查了。
+              已经付过款的话刷新一下这个页面看看；还是没有就联系客服，
+              带上充值单号 <span className="data">{pending.rechargeNo}</span>。
+            </Notice>
+            <div className="btnrow" style={{ marginTop: 14 }}>
+              <button className="btn btn--sm" onClick={() => { setTick(0); void load(); }}>
+                再等一会儿
+              </button>
+            </div>
+          </div>
+        </Unit>
+      )}
 
       {recharges.some((r) => r.status === 'pending_payment') && (
         <Unit>

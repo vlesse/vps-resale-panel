@@ -291,6 +291,28 @@ export class PaymentsService {
       });
       return { kind: 'paid' as const, message: r.message };
     } catch (err: any) {
+      // 退钱之前必须确认订单**真的没被标记成已付款**。
+      // markPaid 里「改状态」和「入队建机」不是一个事务：状态改完、入队失败
+      // 也会抛到这里。这时候订单已经是 paid 了，再把钱退回去就是
+      // 「钱也退了、机器也能开」—— 管理员一点「重试开通」就白送一台。
+      const now = await this.prisma.order.findUnique({
+        where: { orderNo: target.no },
+        select: { status: true },
+      });
+      if (now && now.status !== OrderStatus.pending_payment) {
+        this.logger.error(
+          `订单 ${target.no} 已经是 ${now.status} 了，但后续步骤出错：${err.message}。` +
+            `钱不退（退了就是白送一台），请人工确认这一单开通到哪一步了。`,
+        );
+        await this.prisma.order.update({
+          where: { orderNo: target.no },
+          data: { adminRemark: `余额扣款成功但开通流程出错，需人工确认：${err.message}`.slice(0, 255) },
+        });
+        throw new BadRequestException(
+          '款项已扣，但开通流程出了问题。请联系客服，不要重复下单 —— 我们会人工处理。',
+        );
+      }
+
       this.logger.error(`余额扣款后标记订单 ${target.no} 失败，正在退回：${err.message}`);
       await this.wallet
         .credit(target.userId, target.amountCents, {
@@ -352,23 +374,40 @@ export class PaymentsService {
       select: { amountUnits: true },
     });
     const taken = new Set(pending.map((p) => p.amountUnits.toString()));
-    const amountUnits = this.usdt.pickUniqueAmount(baseUnits, taken);
+    let amountUnits = this.usdt.pickUniqueAmount(baseUnits, taken);
 
     const minutes = Number(this.config.get('USDT_EXPIRE_MINUTES') ?? 30);
-    const intent = await this.prisma.usdtIntent.create({
-      data: {
-        intentNo: generateCode('UDT'),
-        refType: target.kind,
-        refNo: target.no,
-        channelCode: channel.code,
-        address: cred.address,
-        amountUnits,
-        sourceAmountCents: target.amountCents,
-        sourceCurrency: target.currency as any,
-        expiresAt: new Date(Date.now() + minutes * 60_000),
-      },
-    });
-    return this.usdtPayload(intent, cred.address);
+
+    // 上面那次「查已占用的再挑一个」挡不住并发：两个请求同时读到同一份列表
+    // 就可能挑到同一个金额。activeKey 上有唯一索引，真撞了这里会抛 P2002，
+    // 换个金额重来即可。撞三次还不行说明这个地址上待付款已经密到不正常了。
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const intent = await this.prisma.usdtIntent.create({
+          data: {
+            intentNo: generateCode('UDT'),
+            refType: target.kind,
+            refNo: target.no,
+            channelCode: channel.code,
+            address: cred.address,
+            amountUnits,
+            activeKey: `${cred.address}:${amountUnits}`,
+            sourceAmountCents: target.amountCents,
+            sourceCurrency: target.currency as any,
+            expiresAt: new Date(Date.now() + minutes * 60_000),
+          },
+        });
+        return this.usdtPayload(intent, cred.address);
+      } catch (err: any) {
+        if (err?.code !== 'P2002') throw err;
+        this.logger.warn(`USDT 金额 ${this.usdt.format(amountUnits)} 被别的单抢先占了，换一个`);
+        taken.add(amountUnits.toString());
+        amountUnits = this.usdt.pickUniqueAmount(baseUnits, taken);
+      }
+    }
+    throw new BadRequestException(
+      '同一时刻等待中的 USDT 付款太多，暂时分不出金额。等几分钟再试，或者换个支付方式。',
+    );
   }
 
   private usdtPayload(
@@ -427,7 +466,7 @@ export class PaymentsService {
     // 过期的先清掉，把它们占着的金额释放出来
     const expired = await this.prisma.usdtIntent.updateMany({
       where: { status: UsdtIntentStatus.pending, expiresAt: { lte: now } },
-      data: { status: UsdtIntentStatus.expired },
+      data: { status: UsdtIntentStatus.expired, activeKey: null },
     });
     if (expired.count) this.logger.log(`${expired.count} 笔 USDT 待付款超时，已释放`);
 
@@ -455,7 +494,14 @@ export class PaymentsService {
 
   private async scanChannel(
     code: string,
-    intents: { id: bigint; refType: string; refNo: string; amountUnits: bigint; createdAt: Date }[],
+    intents: {
+      id: bigint;
+      refType: string;
+      refNo: string;
+      address: string;
+      amountUnits: bigint;
+      createdAt: Date;
+    }[],
   ) {
     const channel = await this.prisma.payChannel.findUnique({ where: { code } });
     if (!channel || !channel.isEnabled) return;
@@ -471,7 +517,10 @@ export class PaymentsService {
     });
     if (transfers.length === 0) return;
 
-    const wanted = new Map(intents.map((i) => [i.amountUnits.toString(), i]));
+    // 只配对**当前这个收款地址**的待付款。运营中途换过地址的话，
+    // 老地址的待付款不能拿新地址的转账去核销 —— 那笔钱根本没进老地址。
+    const mine = intents.filter((i) => i.address === cred.address);
+    const wanted = new Map(mine.map((i) => [i.amountUnits.toString(), i]));
     for (const t of transfers) {
       const hit = wanted.get(t.valueUnits.toString());
       if (!hit) continue;
@@ -483,7 +532,8 @@ export class PaymentsService {
 
       const claimed = await this.prisma.usdtIntent.updateMany({
         where: { id: hit.id, status: UsdtIntentStatus.pending },
-        data: { status: UsdtIntentStatus.paid, txId: t.txId, paidAt: new Date() },
+          // 释放占用键，这个金额可以给下一位用了
+      data: { status: UsdtIntentStatus.paid, txId: t.txId, paidAt: new Date(), activeKey: null },
       });
       if (claimed.count !== 1) continue; // 别的进程抢先处理了
 
@@ -541,9 +591,57 @@ export class PaymentsService {
     no: string,
     payment: { channel: string; upstreamNo?: string; amountCents?: number; raw?: any },
   ) {
-    return kind === 'recharge'
-      ? this.wallet.markRechargePaid(no, payment)
-      : this.orders.markPaid(no, payment);
+    const r =
+      kind === 'recharge'
+        ? await this.wallet.markRechargePaid(no, payment)
+        : await this.orders.markPaid(no, payment);
+    await this.alarmIfUncollectable(kind, no, payment);
+    return r;
+  }
+
+  /**
+   * 钱到了，但单子已经不能收款了。
+   *
+   * 最常见的是**迟到的付款**：订单 30 分钟超时被自动取消，用户第 31 分钟
+   * 才转的账（USDT 尤其容易，链上确认本身就要几分钟）。这时 markPaid 会
+   * 因为「状态不是待付款」而直接返回成功 —— 钱进来了，东西没给，谁都不知道。
+   *
+   * 这里不自动退款也不自动开通（两者都可能是错的，得看具体情况），
+   * 但一定要在日志里吼出来，并且在单子上留一行字，让人能查到。
+   */
+  private async alarmIfUncollectable(
+    kind: 'order' | 'recharge',
+    no: string,
+    payment: { channel: string; upstreamNo?: string },
+  ) {
+    if (kind === 'recharge') {
+      const r = await this.prisma.rechargeOrder.findUnique({ where: { rechargeNo: no } });
+      if (!r || r.status === RechargeStatus.paid) return;
+      this.logger.error(
+        `钱到了但充值单 ${no} 是 ${r.status} 状态，没有入账！` +
+          `金额 ${(r.amountCents / 100).toFixed(2)}，通道 ${payment.channel}，` +
+          `上游单号 ${payment.upstreamNo ?? '（无）'}。需要人工给用户补上。`,
+      );
+      return;
+    }
+    const o = await this.prisma.order.findUnique({ where: { orderNo: no } });
+    if (!o) return;
+    const collectable = [OrderStatus.paid, OrderStatus.provisioning, OrderStatus.completed];
+    if (collectable.includes(o.status as any)) return;
+
+    this.logger.error(
+      `钱到了但订单 ${no} 是 ${o.status} 状态，没有开通！` +
+        `金额 ${(o.amountCents / 100).toFixed(2)}，通道 ${payment.channel}，` +
+        `上游单号 ${payment.upstreamNo ?? '（无）'}。多半是超时取消之后钱才到的，需要人工处理。`,
+    );
+    await this.prisma.order
+      .update({
+        where: { id: o.id },
+        data: {
+          adminRemark: `收到迟到付款（${payment.channel} ${payment.upstreamNo ?? ''}），订单当时已是 ${o.status}，需人工退款或补开通`.slice(0, 255),
+        },
+      })
+      .catch(() => undefined);
   }
 
   private kindOf(no: string): 'order' | 'recharge' {

@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { CurrencyCode, Prisma, RechargeStatus, WalletTxType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { generateCode } from '../crypto/crypto.util';
@@ -178,7 +179,9 @@ export class WalletService {
     const meta = {
       type: WalletTxType.adjust,
       refType: 'admin',
-      refNo: operator.email,
+      // 这里**不能**放管理员邮箱：这条流水用户在自己的「余额」页上看得见，
+      // 放邮箱等于把运营人员的邮箱挨个发给每一个被调过余额的客户。
+      // 谁调的记在 operatorId 上，只有后台查得到。
       remark: remark.trim().slice(0, 255),
       operatorId: operator.id,
     };
@@ -266,13 +269,28 @@ export class WalletService {
     const row = await this.prisma.rechargeOrder.findUnique({ where: { rechargeNo } });
     if (!row) throw new NotFoundException(`充值单 ${rechargeNo} 不存在`);
 
-    if (row.status !== RechargeStatus.pending_payment) {
-      this.logger.log(`充值单 ${rechargeNo} 状态已是 ${row.status}，跳过重复处理`);
+    // 已经入过账的直接返回，回调重发不能重复加钱。
+    if (row.status === RechargeStatus.paid) {
+      this.logger.log(`充值单 ${rechargeNo} 已经入过账，跳过重复处理`);
       return { ok: true, message: '这笔充值已经处理过了' };
+    }
+
+    // 超时/取消的单子照样入账。
+    //
+    // 充值和买机器不一样：买机器超时了要不要补开、开哪一台，是个需要人判断的事；
+    // 而充值就是「把钱变成余额」，用户付了多少就该有多少，晚到十分钟也不影响。
+    // 这里不入账的话，钱进了我们的账户、用户余额纹丝不动，只会变成一张工单。
+    // 常见来源：链上确认慢、用户第 31 分钟才转账、线下转账隔天才到。
+    if (row.status !== RechargeStatus.pending_payment) {
+      this.logger.warn(
+        `充值单 ${rechargeNo} 已经是 ${row.status} 状态，但钱到了，照常入账 ` +
+          `${fmt(row.amountCents)}（通道 ${payment.channel}）`,
+      );
     }
 
     // 到账金额和单子对不上要留痕。少收了是亏，多收了也得知道。
     let remark = `充值 · ${payment.channel}`;
+    if (row.status === RechargeStatus.expired) remark += '（超时后才到账）';
     if (payment.amountCents != null && payment.amountCents !== row.amountCents) {
       this.logger.error(
         `充值单 ${rechargeNo} 金额对不上！应收 ${row.amountCents}，实收 ${payment.amountCents}`,
@@ -301,6 +319,21 @@ export class WalletService {
     });
 
     return { ok: true, message: '充值已到账' };
+  }
+
+  /**
+   * 每 5 分钟清理超时未付款的充值单。
+   *
+   * 不清的话，用户的「充值记录」里会一直挂着一堆「待付款」，
+   * 他会以为自己有钱没到账，然后来问客服。
+   */
+  @Cron(CronExpression.EVERY_5_MINUTES)
+  async expireStaleRecharges() {
+    const n = await this.prisma.rechargeOrder.updateMany({
+      where: { status: RechargeStatus.pending_payment, expiresAt: { lt: new Date() } },
+      data: { status: RechargeStatus.expired },
+    });
+    if (n.count) this.logger.log(`清理了 ${n.count} 笔超时未付款的充值单`);
   }
 
   /** 管理员那边看到的充值单列表 */
@@ -371,7 +404,8 @@ export class WalletService {
       balanceAfterCents: t.balanceAfterCents,
       currency: t.currency,
       refType: t.refType,
-      refNo: t.refNo,
+      // 兜底：万一历史数据里存过内部标识，也不要发给用户
+      refNo: t.refType === 'admin' ? null : t.refNo,
       remark: t.remark,
       createdAt: t.createdAt,
     };

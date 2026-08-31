@@ -452,6 +452,10 @@ export class NatService {
    */
   private renderCertScript(gw: NatGateway, hosts: string[]): string {
     const NL = String.fromCharCode(10);
+    // 留个邮箱，证书快过期时 Let's Encrypt 会提前发信提醒。
+    // 没配就只能匿名注册 —— 能签出来，但到期前不会有人通知你。
+    const email = this.config.get<string>('ACME_EMAIL');
+    const acmeArg = email ? `-m ${email}` : '--register-unsafely-without-email';
     const L = [
       '#!/bin/bash',
       '# 这个文件由 VPS 面板自动生成，手工改动会在下次下发时被覆盖。',
