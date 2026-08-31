@@ -8,6 +8,10 @@ export default function AdminUsers() {
   const [data, setData] = useState<any>(null);
   const [keyword, setKeyword] = useState('');
   const [flash, setFlash] = useState<{ tone: 'ok' | 'crit'; text: string } | null>(null);
+  // 重置出来的新密码只有这一次能看到，所以单独摆一块出来给管理员复制，
+  // 不用 alert —— 有些浏览器的弹窗里选不中文字。
+  const [reset, setReset] = useState<{ email: string; password: string } | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const load = (k = keyword) => {
     const q = new URLSearchParams({ pageSize: '50' });
@@ -21,6 +25,24 @@ export default function AdminUsers() {
   useEffect(() => {
     void load();
   }, []);
+
+  const resetPassword = async (u: any, custom?: string) => {
+    setFlash(null);
+    setReset(null);
+    try {
+      const r = await api.post<{ password: string; email: string; message: string }>(
+        `/api/admin/users/${u.id}/reset-password`,
+        custom ? { password: custom } : {},
+      );
+      setReset({ email: r.email, password: r.password });
+      setCopied(false);
+      setFlash({ tone: 'ok', text: r.message });
+      if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (e: any) {
+      setFlash({ tone: 'crit', text: e.message });
+    }
+    load();
+  };
 
   const patch = async (id: string, body: any) => {
     setFlash(null);
@@ -52,6 +74,36 @@ export default function AdminUsers() {
           {flash && (
             <div style={{ marginTop: 14 }}>
               <Notice tone={flash.tone}>{flash.text}</Notice>
+            </div>
+          )}
+
+          {reset && (
+            <div className="well" style={{ marginTop: 14 }}>
+              <div className="ro-k">{reset.email} 的新密码</div>
+              <div
+                className="data"
+                style={{ fontSize: 19, marginTop: 6, wordBreak: 'break-all', color: 'var(--ink)' }}
+              >
+                {reset.password}
+              </div>
+              <div className="btnrow" style={{ marginTop: 12 }}>
+                <button
+                  className="btn btn--sm btn--key"
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(reset.password);
+                    setCopied(true);
+                  }}
+                >
+                  {copied ? '已复制' : '复制密码'}
+                </button>
+                <button className="btn btn--sm" onClick={() => setReset(null)}>
+                  我记下了，收起
+                </button>
+              </div>
+              <p className="hint" style={{ marginTop: 10 }}>
+                这串密码<b>只显示这一次</b> —— 库里存的是哈希，任何接口都读不回来。
+                现在就发给他。这个用户在所有设备上的登录都已经失效，要用新密码重新登。
+              </p>
             </div>
           )}
         </div>
@@ -145,6 +197,31 @@ export default function AdminUsers() {
                           }}
                         >
                           调余额
+                        </button>
+                        <button
+                          className="btn btn--sm"
+                          onClick={() => resetPassword(u)}
+                        >
+                          重置密码
+                        </button>
+                        <button
+                          className="btn btn--sm"
+                          onClick={() => {
+                            const p = window.prompt(
+                              `给 ${u.email} 指定一个新密码（至少 8 位）。
+` +
+                                `留空取消。不想自己想密码就用旁边的「重置密码」。`,
+                              '',
+                            );
+                            if (!p) return;
+                            if (p.length < 8) {
+                              setFlash({ tone: 'crit', text: '密码至少 8 位' });
+                              return;
+                            }
+                            void resetPassword(u, p);
+                          }}
+                        >
+                          改密码
                         </button>
                       </div>
                     </td>

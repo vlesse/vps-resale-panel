@@ -57,6 +57,21 @@ export class AdminUserController {
     return this.auth.listUsers(query);
   }
 
+  /**
+   * 重置某个用户的密码。
+   *
+   * 不带 password 就随机生成一个并在响应里返回 —— 那是唯一一次能看到它，
+   * 库里存的是哈希。重置会让该用户在所有设备上掉线。
+   */
+  @Post(':id/reset-password')
+  resetPassword(
+    @CurrentUser() actor: AuthedUser,
+    @Param('id') id: string,
+    @Body() body: { password?: string },
+  ) {
+    return this.auth.adminResetPassword(actor, BigInt(id), body?.password);
+  }
+
   @Patch(':id')
   update(
     @CurrentUser() actor: AuthedUser,

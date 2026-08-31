@@ -148,6 +148,13 @@ model User {
   /// 反刷单闸门：该用户最多能同时持有多少台在跑的机器。0 = 用全局默认值。
   maxActiveServices Int @default(0) @map("max_active_services")
 
+  /// 上次改密码的时间。
+  ///
+  /// 令牌是无状态的，改完密码旧令牌照样能用到过期为止（7 天）——
+  /// 那样「重置密码」就踢不掉任何人，等于半个功能。签发时间早于这个值的
+  /// 令牌一律拒掉，改密码才真的意味着「把别的地方都请出去」。
+  passwordChangedAt DateTime? @map("password_changed_at")
+
   lastLoginAt DateTime? @map("last_login_at")
   lastLoginIp String?   @map("last_login_ip") @db.VarChar(64)
   createdAt   DateTime  @default(now()) @map("created_at")

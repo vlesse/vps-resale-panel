@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { api, formatDate, getToken, type Me } from '@/lib/api';
+import { api, formatDate, getToken, setToken, type Me } from '@/lib/api';
 import { Notice, PanelBar, Readout, Unit } from '@/components/ui';
 
 export default function Profile() {
@@ -41,6 +41,9 @@ export default function Profile() {
     setFlash(null);
     try {
       const r = await api.post<any>('/api/auth/change-password', { oldPassword: oldPw, newPassword: newPw });
+      // 后端换了一张新令牌：改密码会让改之前签发的令牌全部作废，
+      // 不把新的存下来，用户在自己这台设备上一点就被踢出去了。
+      if (r?.token) setToken(r.token);
       setFlash({ tone: 'ok', text: r.message });
       setOldPw('');
       setNewPw('');

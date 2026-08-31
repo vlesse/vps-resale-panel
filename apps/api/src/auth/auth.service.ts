@@ -12,7 +12,9 @@ import { JwtService } from '@nestjs/jwt';
 import { UserRole, UserStatus } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
+import { generatePassword } from '../crypto/crypto.util';
 import { CaptchaService } from '../captcha/captcha.service';
+import { AuthedUser } from './auth.decorators';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -20,6 +22,8 @@ export interface JwtPayload {
   sub: string;
   email: string;
   role: UserRole;
+  /** 签发时间（秒）。jwt 库自动带上，用来判断令牌是不是改密码之前签的。 */
+  iat?: number;
 }
 
 @Injectable()
@@ -140,11 +144,18 @@ export class AuthService implements OnModuleInit {
     }
     if (dto.newPassword.length < 8) throw new BadRequestException('新密码至少 8 位');
 
-    await this.prisma.user.update({
+    const updated = await this.prisma.user.update({
       where: { id: userId },
-      data: { passwordHash: await bcrypt.hash(dto.newPassword, BCRYPT_ROUNDS) },
+      data: {
+        passwordHash: await bcrypt.hash(dto.newPassword, BCRYPT_ROUNDS),
+        passwordChangedAt: new Date(),
+      },
     });
-    return { ok: true, message: '密码已修改' };
+
+    // 换一张新令牌给当前这台设备。
+    // 不换的话，用户在自己的设备上改完密码，下一次点击就被自己踢出去了 ——
+    // 别的设备该掉线（那正是改密码的目的），但手头这台不该。
+    return { ok: true, message: '密码已修改，其它设备上的登录已失效', token: this.sign(updated) };
   }
 
   // ---------- 管理员 ----------
@@ -223,11 +234,69 @@ export class AuthService implements OnModuleInit {
           ? { maxActiveServices: Math.max(0, Number(dto.maxActiveServices) || 0) }
           : {}),
         ...(dto.newPassword
-          ? { passwordHash: await bcrypt.hash(dto.newPassword, BCRYPT_ROUNDS) }
+          ? {
+              passwordHash: await bcrypt.hash(dto.newPassword, BCRYPT_ROUNDS),
+              passwordChangedAt: new Date(),
+            }
           : {}),
       },
     });
     return this.publicUser(user);
+  }
+
+  /**
+   * 管理员帮用户重置密码。
+   *
+   * 不传新密码就生成一个 —— 而且**只在这一次响应里返回**，
+   * 之后任何接口都读不出来（库里只有 bcrypt 哈希）。管理员要把它
+   * 转给用户，所以生成用的是那套剔除了 O/0/l/1/I 的字符集：
+   * 这串字是要被人手抄或口述的。
+   *
+   * 重置会让这个用户在**所有设备**上掉线，包括正在用的那台。
+   * 这正是重置密码该有的效果 —— 号被盗了，重置完盗号的人就该进不来。
+   */
+  async adminResetPassword(
+    actor: AuthedUser,
+    targetId: bigint,
+    password?: string,
+  ): Promise<{ ok: boolean; password: string; email: string; message: string }> {
+    const target = await this.prisma.user.findUnique({ where: { id: targetId } });
+    if (!target) throw new NotFoundException('用户不存在');
+
+    const pw = password?.trim() || generatePassword(14);
+    if (pw.length < 8 || pw.length > 72) {
+      throw new BadRequestException('密码要 8 到 72 位');
+    }
+
+    await this.prisma.user.update({
+      where: { id: targetId },
+      data: {
+        passwordHash: await bcrypt.hash(pw, BCRYPT_ROUNDS),
+        passwordChangedAt: new Date(),
+      },
+    });
+
+    // 谁给谁重置的必须留痕。这是能直接接管一个账号的操作。
+    this.logger.warn(`管理员 ${actor.email} 重置了 ${target.email} 的密码`);
+    await this.prisma.operationLog
+      .create({
+        data: {
+          actorType: 'admin',
+          actorId: actor.id,
+          action: 'reset_password',
+          targetType: 'user',
+          targetId: targetId,
+          metaJson: { targetEmail: target.email },
+        },
+      })
+      .catch(() => undefined); // 记不上日志不该让重置本身失败
+
+    return {
+      ok: true,
+      password: pw,
+      email: target.email,
+      message: `已重置。这串密码只显示这一次，现在就复制给 ${target.email}。`,
+    };
   }
 
   // ---------- 内部 ----------
