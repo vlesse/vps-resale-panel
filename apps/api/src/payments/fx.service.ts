@@ -284,6 +284,17 @@ export function roundUpTo(value: number, step: number): number {
   return (n * s) / scale;
 }
 
+/**
+ * 这个币种一个「主单位」等于多少「最小单位」。
+ *
+ * 支付网关的金额字段一律用最小单位（人民币是分、美元是美分）。
+ * 瑞尔这类没有小数位的币种，最小单位就是它自己 —— 报 603 就是 603 瑞尔，
+ * 按 100 去乘会变成 60300，多收一百倍。
+ */
+export function minorUnits(currency: string): number {
+  return NO_DECIMALS.has(currency.toUpperCase()) ? 1 : 100;
+}
+
 /** 千分位。零小数币种不写小数点。 */
 export function formatAmount(value: number, currency: string): string {
   const digits = NO_DECIMALS.has(currency.toUpperCase()) ? 0 : 2;

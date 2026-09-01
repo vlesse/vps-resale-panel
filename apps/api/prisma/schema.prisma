@@ -539,6 +539,13 @@ model PayChannel {
   payCurrency          String?  @map("pay_currency") @db.VarChar(8)
   // 手工汇率（1 单位计价币 = 多少单位 payCurrency）。留空则用当日实时汇率。
   payRate              Float?   @map("pay_rate")
+  // 折算后的金额是不是也照样报给网关。
+  //
+  // 默认关：只改给顾客看的数字，报给网关的还是原币种原金额。
+  // 但如果网关是靠「等一笔金额对得上的钱」来销账的，两边报的数不一样就永远对不上 ——
+  // 网关等着 1.00 元，顾客付的是 603 瑞尔，谁也等不到谁。这时候要打开。
+  // 打开之后网关如果不认这个币种，下单会直接报错，关掉即可恢复。
+  payCurrencyToGateway Boolean  @default(false) @map("pay_currency_to_gateway")
   gatewayUrl           String?  @map("gateway_url") @db.VarChar(255)
   credentialsEncrypted String   @map("credentials_encrypted") @db.Text
   rate                 Float?

@@ -9,7 +9,7 @@ import { decryptJson, encryptJson, generateCode, tryDecryptJson } from '../crypt
 import { JeepayCredentials, JeepayDriver } from './drivers/jeepay.driver';
 import { EpayCredentials, EpayDriver } from './drivers/epay.driver';
 import { UsdtCredentials, UsdtDriver } from './drivers/usdt.driver';
-import { FxQuote, FxService } from './fx.service';
+import { FxQuote, FxService, minorUnits } from './fx.service';
 import { AuthedUser } from '../auth/auth.decorators';
 
 /**
@@ -200,20 +200,29 @@ export class PaymentsService {
         const prior = await this.settledAlready(target);
         if (prior) return prior;
 
+        // 折算只算一次，显示和上报共用同一个结果。
+        //
+        // 分两次算迟早会算出两个数：显示用今天的汇率、上报用管理员上个月填的，
+        // 或者两边的取整方向不一样。网关等着一个数、顾客付的是另一个数，
+        // 谁也对不上谁 —— 这种错查起来极其痛苦，因为两边看各自都是对的。
+        const quote = await this.payQuote(channel, target);
+        const gw = this.gatewayAmount(channel, target, quote);
+
         const gwNo = this.gatewayNo(target.no);
         const result = await this.jeepay.createPayment(
           { ...cred, gatewayUrl: channel.gatewayUrl || cred.gatewayUrl },
           {
             orderNo: gwNo,
-            amountCents: this.convertAmount(target.amountCents, target.currency, channel),
-            currency: channel.settleCurrency || target.currency,
+            amountCents: gw.amount,
+            currency: gw.currency,
             wayCode: channel.wayCode || '',
             subject: target.subject,
             body: target.body,
             notifyUrl: `${this.baseUrl()}/api/payments/jeepay/notify`,
             returnUrl: this.returnUrl(target),
             clientIp,
-            rate: channel.rate ?? undefined,
+            // 已经折算过就别让驱动再乘一次
+            rate: gw.converted ? undefined : channel.rate ?? undefined,
           },
         );
         await this.rememberGatewayRefs(target, gwNo, result.payOrderId);
@@ -222,7 +231,7 @@ export class PaymentsService {
           codeUrl: result.codeUrl,
           payUrl: result.payUrl,
           upstreamNo: result.payOrderId,
-          payQuote: await this.payQuote(channel, target),
+          payQuote: quote,
         };
       }
 
@@ -607,7 +616,11 @@ export class PaymentsService {
           mchOrderNo: t.row.gatewayOrderNo,
         });
         if (!r) continue; // 这个驱动不支持查单
-        summary.push(`${t.no}=${r.stateText}`);
+        // 把网关记的金额和币种一起写出来：对账时最要紧的就是
+        // 「它等的那个数」和「我们让顾客付的那个数」是不是一回事
+        const amt =
+          r.amountCents != null ? `，网关记的金额 ${r.amountCents} ${r.raw?.currency ?? ''}` : '';
+        summary.push(`${t.no}=${r.stateText}${amt}`);
         if (r.paid) {
           this.logger.warn(`${t.no} 网关说已支付，但我们没收到回调 —— 现在补上`);
           await this.settle(t.kind, t.no, {
@@ -830,6 +843,37 @@ export class PaymentsService {
       this.logger.warn(`折算实付金额失败，这次先不显示：${err?.message ?? err}`);
       return null;
     }
+  }
+
+  /**
+   * 报给网关的金额和币种。
+   *
+   * 默认原样上报 —— 只把折算后的数字给顾客看，不动真正的收款请求。
+   *
+   * 打开「折算后的金额也报给网关」之后，改成上报同一个折算结果。这在网关靠
+   * 「等一笔金额对得上的钱」销账时是**必须**的：网关记着 1.00 元、顾客付的是
+   * 603 瑞尔，它会一直等下去，订单永远停在「支付中」。
+   *
+   * 金额单位是该币种的最小单位：瑞尔没有小数位，603 瑞尔就报 603，
+   * 按 100 去乘会变成六万多，多收一百倍。
+   */
+  private gatewayAmount(
+    channel: { payCurrencyToGateway: boolean; settleCurrency: string | null },
+    target: PayTarget,
+    quote: FxQuote | null,
+  ): { amount: number; currency: string; converted: boolean } {
+    if (channel.payCurrencyToGateway && quote) {
+      return {
+        amount: Math.round(quote.amount * minorUnits(quote.currency)),
+        currency: quote.currency,
+        converted: true,
+      };
+    }
+    return {
+      amount: this.convertAmount(target.amountCents, target.currency, channel as any),
+      currency: channel.settleCurrency || target.currency,
+      converted: false,
+    };
   }
 
   /**
@@ -1063,6 +1107,7 @@ export class PaymentsService {
       settleCurrency: c.settleCurrency,
       payCurrency: c.payCurrency,
       payRate: c.payRate,
+      payCurrencyToGateway: c.payCurrencyToGateway,
       gatewayUrl: c.gatewayUrl,
       rate: c.rate,
       usdToCnyRate: c.usdToCnyRate,
@@ -1095,6 +1140,7 @@ export class PaymentsService {
         settleCurrency: dto.settleCurrency ?? null,
         payCurrency: normalizeCurrency(dto.payCurrency),
         payRate: dto.payRate ?? null,
+        payCurrencyToGateway: dto.payCurrencyToGateway ?? false,
         gatewayUrl: dto.gatewayUrl ?? null,
         credentialsEncrypted: encryptJson(this.secret(), dto.credentials ?? {}),
         rate: dto.rate ?? null,
@@ -1122,6 +1168,9 @@ export class PaymentsService {
           ? { payCurrency: normalizeCurrency(dto.payCurrency) }
           : {}),
         ...(dto.payRate !== undefined ? { payRate: dto.payRate || null } : {}),
+        ...(dto.payCurrencyToGateway !== undefined
+          ? { payCurrencyToGateway: !!dto.payCurrencyToGateway }
+          : {}),
         ...(dto.gatewayUrl !== undefined ? { gatewayUrl: dto.gatewayUrl } : {}),
         ...(dto.credentials
           ? { credentialsEncrypted: encryptJson(this.secret(), dto.credentials) }
@@ -1357,6 +1406,8 @@ export interface ChannelInput {
   payCurrency?: string | null;
   /** 手工汇率，留空 = 用当日实时汇率 */
   payRate?: number | null;
+  /** 折算后的金额是不是也照样报给网关 */
+  payCurrencyToGateway?: boolean;
   gatewayUrl?: string;
   credentials?: Record<string, any>;
   rate?: number;

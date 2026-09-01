@@ -20,7 +20,7 @@ import { parseProbeOutput } from '../src/providers/ssh-exec.util';
 import { JeepayDriver } from '../src/payments/drivers/jeepay.driver';
 import { EpayDriver } from '../src/payments/drivers/epay.driver';
 import { UsdtDriver } from '../src/payments/drivers/usdt.driver';
-import { formatAmount, roundUpTo, stepFor } from '../src/payments/fx.service';
+import { formatAmount, minorUnits, roundUpTo, stepFor } from '../src/payments/fx.service';
 
 let failed = 0;
 const check = (name: string, ok: boolean, extra = '') => {
@@ -337,6 +337,13 @@ console.log('\n[11] 汇率折算 —— 算少了是从商户口袋里出钱，�
   check('美元写两位小数', formatAmount(1234.5, 'USD') === '1,234.50');
 
   // 从「分」换算过去：小数点挪错一位就是 100 倍的差
+  // 报给网关的金额单位是「最小单位」。瑞尔没有分，603 瑞尔就报 603；
+  // 顺手乘个 100 就是六万多，一百倍的差
+  check('瑞尔的最小单位是它自己', minorUnits('KHR') === 1);
+  check('人民币的最小单位是分', minorUnits('CNY') === 100);
+  check('美元的最小单位是美分', minorUnits('USD') === 100);
+  check('603 瑞尔报给网关就是 603', Math.round(603 * minorUnits('KHR')) === 603);
+
   check('1 元 = 603 瑞尔', roundUpTo((100 / 100) * 602.77, stepFor('KHR')) === 603);
   check('50 元 = 30139 瑞尔', roundUpTo((5000 / 100) * 602.77, stepFor('KHR')) === 30139);
 }

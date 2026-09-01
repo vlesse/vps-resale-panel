@@ -13,6 +13,7 @@ interface Channel {
   settleCurrency: string | null;
   payCurrency: string | null;
   payRate: number | null;
+  payCurrencyToGateway: boolean;
   gatewayUrl: string | null;
   rate: number | null;
   usdToCnyRate: number | null;
@@ -133,6 +134,7 @@ export default function PayChannels() {
       wayCode: c.wayCode ?? '',
       payCurrency: c.payCurrency ?? '',
       payRate: c.payRate == null ? '' : String(c.payRate),
+      payCurrencyToGateway: c.payCurrencyToGateway ? '1' : '',
       sortOrder: String(c.sortOrder ?? 0),
       descText: c.descText ?? '',
     });
@@ -152,6 +154,7 @@ export default function PayChannels() {
         wayCode: ef.wayCode?.trim() || null,
         payCurrency: ef.payCurrency?.trim() || null,
         payRate: ef.payRate?.trim() ? Number(ef.payRate) : null,
+        payCurrencyToGateway: ef.payCurrencyToGateway === '1',
         sortOrder: Number(ef.sortOrder) || 0,
         descText: ef.descText?.trim() || null,
       });
@@ -331,6 +334,7 @@ export default function PayChannels() {
                   {c.settleCurrency ? ` · 以 ${c.settleCurrency} 结算` : ''}
                   {c.payCurrency ? ` · 顾客实付 ${c.payCurrency}` : ''}
                   {c.payRate ? ` · 固定汇率 ${c.payRate}` : ''}
+                  {c.payCurrencyToGateway ? ' · 折算后上报网关' : ''}
                   {c.usdToCnyRate ? ` · 1 USDT ≈ ${c.usdToCnyRate} 元` : ''}
                 </div>
               </div>
@@ -393,6 +397,24 @@ export default function PayChannels() {
                           placeholder="留空 = 用当日实时汇率"
                           {...eset('payRate')}
                         />
+                      </div>
+                      <div className="field">
+                        <label className="label">折算后的金额也报给网关</label>
+                        <select
+                          className="input"
+                          value={ef.payCurrencyToGateway ?? ''}
+                          onChange={(e) =>
+                            setEf({ ...ef, payCurrencyToGateway: e.target.value })
+                          }
+                        >
+                          <option value="">否 —— 只改给顾客看的数字</option>
+                          <option value="1">是 —— 网关也按这个币种和金额下单</option>
+                        </select>
+                        <span className="hint">
+                          网关如果是靠「等一笔金额对得上的钱」来销账的，就必须选「是」，
+                          否则网关记着 1.00 元、顾客付的是 603 瑞尔，订单会一直停在「支付中」。
+                          选了之后网关要是不认这个币种，下单会当场报错，改回「否」即可。
+                        </span>
                       </div>
                     </>
                   )}
