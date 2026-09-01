@@ -11,10 +11,13 @@ interface Channel {
   driver: string;
   wayCode: string | null;
   settleCurrency: string | null;
+  payCurrency: string | null;
+  payRate: number | null;
   gatewayUrl: string | null;
   rate: number | null;
   usdToCnyRate: number | null;
   isEnabled: boolean;
+  sortOrder: number;
   descText: string | null;
   credentialSummary: Record<string, string>;
 }
@@ -52,6 +55,8 @@ export default function PayChannels() {
   const [flash, setFlash] = useState<{ tone: 'ok' | 'crit' | 'warn'; text: string } | null>(null);
   const [adding, setAdding] = useState<string | null>(null);
   const [f, setF] = useState<Record<string, string>>({});
+  const [editing, setEditing] = useState<string | null>(null);
+  const [ef, setEf] = useState<Record<string, string>>({});
 
   const load = () =>
     api.get<Channel[]>('/api/admin/pay-channels').then(setRows).catch(() => undefined);
@@ -86,6 +91,8 @@ export default function PayChannels() {
         wayCode: spec.needsWayCode ? f.wayCode?.trim() : undefined,
         gatewayUrl: credentials.gatewayUrl,
         settleCurrency: f.settleCurrency?.trim() || undefined,
+        payCurrency: f.payCurrency?.trim() || undefined,
+        payRate: f.payRate ? Number(f.payRate) : undefined,
         usdToCnyRate: f.usdToCnyRate ? Number(f.usdToCnyRate) : undefined,
         descText: f.descText,
         credentials,
@@ -109,6 +116,52 @@ export default function PayChannels() {
     value: f[k] ?? '',
     onChange: (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value }),
   });
+
+  const eset = (k: string) => ({
+    value: ef[k] ?? '',
+    onChange: (e: { target: { value: string } }) => setEf({ ...ef, [k]: e.target.value }),
+  });
+
+  const openEdit = (c: Channel) => {
+    if (editing === c.id) {
+      setEditing(null);
+      return;
+    }
+    setEditing(c.id);
+    setEf({
+      name: c.name,
+      wayCode: c.wayCode ?? '',
+      payCurrency: c.payCurrency ?? '',
+      payRate: c.payRate == null ? '' : String(c.payRate),
+      sortOrder: String(c.sortOrder ?? 0),
+      descText: c.descText ?? '',
+    });
+  };
+
+  /**
+   * 保存改动。
+   *
+   * 空字符串要原样发过去，不能 `|| undefined` —— 那样「把手工汇率清掉、
+   * 改回用实时汇率」这个操作永远做不到：字段被当成没填，后端就不会去动它。
+   */
+  const saveEdit = async (c: Channel) => {
+    setFlash(null);
+    try {
+      await api.patch(`/api/admin/pay-channels/${c.id}`, {
+        name: ef.name?.trim() || c.name,
+        wayCode: ef.wayCode?.trim() || null,
+        payCurrency: ef.payCurrency?.trim() || null,
+        payRate: ef.payRate?.trim() ? Number(ef.payRate) : null,
+        sortOrder: Number(ef.sortOrder) || 0,
+        descText: ef.descText?.trim() || null,
+      });
+      setEditing(null);
+      setFlash({ tone: 'ok', text: '已保存' });
+      await load();
+    } catch (e: any) {
+      setFlash({ tone: 'crit', text: e.message });
+    }
+  };
 
   return (
     <>
@@ -180,6 +233,46 @@ export default function PayChannels() {
                 </div>
               )}
 
+              {/* 余额通道不出网，没有「顾客实付币种」这回事 */}
+              {spec.driver !== 'balance' && (
+                <>
+                  <div className="field">
+                    <label className="label">
+                      顾客实付币种<span className="silk">（选填）</span>
+                    </label>
+                    <input
+                      className="input"
+                      spellCheck={false}
+                      placeholder="KHR"
+                      maxLength={3}
+                      {...set('payCurrency')}
+                    />
+                    <span className="hint">
+                      收款码收的不是人民币时填这里，比如柬埔寨的 ABA 填 KHR。
+                      填了之后付款页会按当日汇率算出「本次需要输入多少瑞尔」并显著提示 ——
+                      静态收款码里不带金额，顾客要自己敲，不写清楚就会收错钱。
+                      留空表示就按面板计价币种付。
+                    </span>
+                  </div>
+                  <div className="field">
+                    <label className="label">
+                      手工汇率<span className="silk">（选填）</span>
+                    </label>
+                    <input
+                      className="input"
+                      type="number"
+                      step="0.0001"
+                      placeholder="留空 = 用当日实时汇率"
+                      {...set('payRate')}
+                    />
+                    <span className="hint">
+                      1 单位计价币 = 多少上面那个币种。跟收单行谈的是固定汇率时填这里，
+                      填了就不再查实时汇率。
+                    </span>
+                  </div>
+                </>
+              )}
+
               {spec.needsRate && (
                 <div className="field">
                   <label className="label">汇率（1 USDT = 多少人民币）</label>
@@ -236,6 +329,8 @@ export default function PayChannels() {
                   {c.code} · {c.driver}
                   {c.wayCode ? ` · ${c.wayCode}` : ''}
                   {c.settleCurrency ? ` · 以 ${c.settleCurrency} 结算` : ''}
+                  {c.payCurrency ? ` · 顾客实付 ${c.payCurrency}` : ''}
+                  {c.payRate ? ` · 固定汇率 ${c.payRate}` : ''}
                   {c.usdToCnyRate ? ` · 1 USDT ≈ ${c.usdToCnyRate} 元` : ''}
                 </div>
               </div>
@@ -253,7 +348,78 @@ export default function PayChannels() {
               </div>
             </div>
 
+            {editing === c.id && (
+              <div className="well" style={{ marginTop: 14 }}>
+                <div className="grid2">
+                  <div className="field">
+                    <label className="label">显示名</label>
+                    <input className="input" {...eset('name')} />
+                  </div>
+                  <div className="field">
+                    <label className="label">排序</label>
+                    <input className="input" type="number" {...eset('sortOrder')} />
+                    <span className="hint">
+                      数字小的排前面，也就是付款页默认选中的那个。
+                    </span>
+                  </div>
+                  {c.driver !== 'balance' && c.driver !== 'manual' && (
+                    <div className="field">
+                      <label className="label">支付方式（wayCode）</label>
+                      <input className="input" spellCheck={false} {...eset('wayCode')} />
+                    </div>
+                  )}
+                  {c.driver !== 'balance' && (
+                    <>
+                      <div className="field">
+                        <label className="label">顾客实付币种</label>
+                        <input
+                          className="input"
+                          spellCheck={false}
+                          placeholder="KHR"
+                          maxLength={3}
+                          {...eset('payCurrency')}
+                        />
+                        <span className="hint">
+                          收款码收的不是人民币时填，比如 ABA 填 KHR。付款页会按当日汇率
+                          算出「本次需要输入多少瑞尔」并显著提示。留空 = 不折算。
+                        </span>
+                      </div>
+                      <div className="field">
+                        <label className="label">手工汇率</label>
+                        <input
+                          className="input"
+                          type="number"
+                          step="0.0001"
+                          placeholder="留空 = 用当日实时汇率"
+                          {...eset('payRate')}
+                        />
+                      </div>
+                    </>
+                  )}
+                </div>
+                <div className="field">
+                  <label className="label">给用户的说明</label>
+                  <textarea className="textarea" style={{ minHeight: 80 }} {...eset('descText')} />
+                  {c.driver === 'manual' && (
+                    <span className="hint">
+                      线下转账全靠这段话。把真实的收款账号、户名、转账后怎么联系写进去 ——
+                      用户看到的就是这一段，写着「xxx」的话他不知道该往哪转。
+                    </span>
+                  )}
+                </div>
+                <div className="btnrow">
+                  <button className="btn btn--key btn--sm" onClick={() => saveEdit(c)}>
+                    保存
+                  </button>
+                  <button className="btn btn--sm" onClick={() => setEditing(null)}>取消</button>
+                </div>
+              </div>
+            )}
+
             <div className="btnrow" style={{ marginTop: 14 }}>
+              <button className="btn btn--sm" onClick={() => openEdit(c)}>
+                {editing === c.id ? '收起' : '编辑'}
+              </button>
               <button
                 className="btn btn--sm"
                 onClick={async () => {

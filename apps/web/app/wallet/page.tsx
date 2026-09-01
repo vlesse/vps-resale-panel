@@ -3,9 +3,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { api, formatDate, getToken, money, type PayChannel } from '@/lib/api';
+import {
+  api,
+  defaultChannel,
+  fetchQuote,
+  formatDate,
+  getToken,
+  money,
+  type FxQuote,
+  type PayChannel,
+} from '@/lib/api';
 import { Notice, PanelBar, Readout, Unit } from '@/components/ui';
-import { PayPanel, type PayInfo } from '@/components/pay-panel';
+import { ChannelCard, FxCallout, PayPanel, type PayInfo } from '@/components/pay-panel';
 
 interface WalletSummary {
   balanceCents: number;
@@ -81,6 +90,7 @@ export default function WalletPage() {
   const [picked, setPicked] = useState<string | null>(null);
   const [pending, setPending] = useState<Recharge | null>(null);
   const [payInfo, setPayInfo] = useState<PayInfo | null>(null);
+  const [quote, setQuote] = useState<FxQuote | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -110,7 +120,7 @@ export default function WalletPage() {
       .then((c) => {
         const usable = c.filter((x) => x.usableForRecharge !== false);
         setChannels(usable);
-        setPicked(usable[0]?.code ?? null);
+        setPicked(defaultChannel(usable));
       })
       .catch(() => undefined);
   }, [router, load]);
@@ -148,6 +158,34 @@ export default function WalletPage() {
       if (poll.current) clearTimeout(poll.current);
     };
   }, [pending, tick, sum?.balanceCents, load]);
+
+  /**
+   * 「这笔充值扫码时要输多少瑞尔」的预览。
+   *
+   * 放在点付款**之前**：等下单之后才知道自己要掏多少已经晚了 ——
+   * 用户会先看到一个陌生的数字，然后回头怀疑是不是充错了金额。
+   *
+   * 拿不到就不显示，绝不因为汇率接口抽风挡住付款。
+   */
+  useEffect(() => {
+    const c = Math.round(Number(amountYuan) * 100);
+    const ch = channels.find((x) => x.code === picked);
+    if (!picked || !ch?.payCurrency || !(c > 0)) {
+      setQuote(null);
+      return;
+    }
+    // 用户还在敲金额的时候不要每按一个键就问一次
+    let alive = true;
+    const t = setTimeout(() => {
+      void fetchQuote(picked, c, sum?.currency).then((q) => {
+        if (alive) setQuote(q);
+      });
+    }, 400);
+    return () => {
+      alive = false;
+      clearTimeout(t);
+    };
+  }, [picked, amountYuan, channels, sum?.currency]);
 
   const payRef = useRef<HTMLDivElement | null>(null);
   const scrollToPay = () =>
@@ -281,25 +319,21 @@ export default function WalletPage() {
               <div className="label" style={{ marginTop: 16 }}>支付方式</div>
               <div className="grid2" style={{ marginTop: 8 }}>
                 {channels.map((c) => (
-                  <button
+                  <ChannelCard
                     key={c.code}
-                    type="button"
-                    onClick={() => setPicked(c.code)}
-                    className="well"
-                    style={{
-                      textAlign: 'left',
-                      cursor: 'pointer',
-                      border: 0,
-                      outline: picked === c.code ? '1px solid var(--accent)' : 'none',
-                      outlineOffset: 1,
-                    }}
-                  >
-                    <div style={{ color: 'var(--ink)', fontSize: 15 }}>{c.name}</div>
-                    {c.desc && <div className="hint" style={{ marginTop: 4 }}>{c.desc}</div>}
-                  </button>
+                    channel={c}
+                    on={picked === c.code}
+                    onPick={() => setPicked(c.code)}
+                  />
                 ))}
               </div>
             </>
+          )}
+
+          {quote && (
+            <div style={{ marginTop: 16 }}>
+              <FxCallout quote={quote} cta="扫码后需要手动输入这个金额" />
+            </div>
           )}
 
           {error && (

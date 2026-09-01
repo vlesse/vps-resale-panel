@@ -529,6 +529,12 @@ model PayChannel {
   driver               String   @db.VarChar(24) // jeepay | tokenpay
   wayCode              String?  @map("way_code") @db.VarChar(48)
   settleCurrency       String?  @map("settle_currency") @db.VarChar(16)
+  // 顾客扫码时实际要输入的币种。面板按人民币计价、收款码是柬埔寨 ABA 这类
+  // 情况下，顾客手里要付的是瑞尔，得按当日汇率折算给他看。留空表示和面板计价
+  // 币种一致，不做任何折算。
+  payCurrency          String?  @map("pay_currency") @db.VarChar(8)
+  // 手工汇率（1 单位计价币 = 多少单位 payCurrency）。留空则用当日实时汇率。
+  payRate              Float?   @map("pay_rate")
   gatewayUrl           String?  @map("gateway_url") @db.VarChar(255)
   credentialsEncrypted String   @map("credentials_encrypted") @db.Text
   rate                 Float?
@@ -540,6 +546,25 @@ model PayChannel {
   updatedAt            DateTime @updatedAt @map("updated_at")
 
   @@map("pay_channels")
+}
+
+/**
+ * 汇率缓存。
+ *
+ * 只存最近一次拿到的值：汇率接口偶尔会抽风，抽风时宁可拿昨天的汇率
+ * 标个「参考」给用户看，也不能因为取不到汇率就让人付不了款。
+ */
+model FxRate {
+  id        BigInt   @id @default(autoincrement())
+  base      String   @db.VarChar(8)
+  quote     String   @db.VarChar(8)
+  rate      Float
+  source    String   @db.VarChar(32)
+  asOf      DateTime @map("as_of")
+  fetchedAt DateTime @default(now()) @map("fetched_at")
+
+  @@unique([base, quote])
+  @@map("fx_rates")
 }
 
 // ---------- 审计 ----------

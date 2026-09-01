@@ -9,6 +9,7 @@ import { decryptJson, encryptJson, generateCode, tryDecryptJson } from '../crypt
 import { JeepayCredentials, JeepayDriver } from './drivers/jeepay.driver';
 import { EpayCredentials, EpayDriver } from './drivers/epay.driver';
 import { UsdtCredentials, UsdtDriver } from './drivers/usdt.driver';
+import { FxQuote, FxService } from './fx.service';
 import { AuthedUser } from '../auth/auth.decorators';
 
 /**
@@ -51,6 +52,7 @@ export class PaymentsService {
     private readonly jeepay: JeepayDriver,
     private readonly epay: EpayDriver,
     private readonly usdt: UsdtDriver,
+    private readonly fx: FxService,
     private readonly config: ConfigService,
   ) {}
 
@@ -89,6 +91,8 @@ export class PaymentsService {
       icon: c.icon,
       driver: c.driver,
       settleCurrency: c.settleCurrency,
+      // 顾客扫码时实际要输入的币种。前端拿它去换「本次要付多少瑞尔」的提示。
+      payCurrency: c.payCurrency,
       desc: c.descText,
       // 充值单不能用余额付（拿余额充余额没有意义），前端据此隐藏
       usableForRecharge: c.driver !== 'balance',
@@ -178,6 +182,7 @@ export class PaymentsService {
           kind: 'manual' as const,
           message: '请按页面提示完成转账，转账后联系客服确认，管理员确认后会自动开通',
           instructions: channel.descText,
+          payQuote: await this.payQuote(channel, target),
         };
 
       case 'balance':
@@ -206,6 +211,7 @@ export class PaymentsService {
           codeUrl: result.codeUrl,
           payUrl: result.payUrl,
           upstreamNo: result.payOrderId,
+          payQuote: await this.payQuote(channel, target),
         };
       }
 
@@ -230,6 +236,7 @@ export class PaymentsService {
             codeUrl: r.qrCode,
             payUrl: r.payUrl,
             upstreamNo: r.tradeNo,
+            payQuote: await this.payQuote(channel, target),
           };
         } catch (err: any) {
           // 不少服务商没开 mapi.php，只提供 submit.php 的页面跳转。
@@ -586,6 +593,58 @@ export class PaymentsService {
    * 有些通道只以特定货币结算（比如某些东南亚通道只收 KHR），
    * 这时候标价是 CNY 但实际扣款要换算。汇率配在通道上，运营自己维护。
    */
+  /**
+   * 顾客扫码后实际要输入多少钱。
+   *
+   * 这是**纯展示**：报给网关的金额和币种一个字都不动。原因是这类收款码
+   * （柬埔寨 ABA 的 KHQR 静态码）里根本不带金额 —— 网关那边只是记一笔账，
+   * 真正决定收到多少的是顾客自己在手机上输的那个数。所以要解决的问题
+   * 只有一个：把「1 元」翻译成他手机上该敲的瑞尔数字，并且写得足够大。
+   *
+   * 汇率算不出来绝不能挡住付款：宁可不显示这行提示，也不能让人点了付不了。
+   */
+  private async payQuote(
+    channel: { payCurrency: string | null; payRate: number | null },
+    target: PayTarget,
+  ): Promise<FxQuote | null> {
+    if (!channel.payCurrency) return null;
+    try {
+      return await this.fx.quoteFor(
+        target.amountCents,
+        target.currency,
+        channel.payCurrency,
+        channel.payRate,
+      );
+    } catch (err: any) {
+      this.logger.warn(`折算实付金额失败，这次先不显示：${err?.message ?? err}`);
+      return null;
+    }
+  }
+
+  /**
+   * 还没点付款时的预览。
+   *
+   * 让用户在选好通道、填好金额的当下就看见「大约 40,300 瑞尔」，
+   * 而不是等下单之后才知道自己要掏多少 —— 后者已经晚了。
+   */
+  async quote(channelCode: string, amountCents: number, currency?: string) {
+    const cents = Math.round(Number(amountCents));
+    if (!Number.isFinite(cents) || cents <= 0) return { quote: null };
+    const channel = await this.prisma.payChannel.findUnique({ where: { code: channelCode } });
+    if (!channel || !channel.isEnabled || !channel.payCurrency) return { quote: null };
+    try {
+      const q = await this.fx.quoteFor(
+        cents,
+        (currency || this.wallet.currency()).toUpperCase(),
+        channel.payCurrency,
+        channel.payRate,
+      );
+      return { quote: q };
+    } catch {
+      return { quote: null };
+    }
+  }
+
   private convertAmount(
     amountCents: number,
     orderCurrency: string,
@@ -791,6 +850,8 @@ export class PaymentsService {
       driver: c.driver,
       wayCode: c.wayCode,
       settleCurrency: c.settleCurrency,
+      payCurrency: c.payCurrency,
+      payRate: c.payRate,
       gatewayUrl: c.gatewayUrl,
       rate: c.rate,
       usdToCnyRate: c.usdToCnyRate,
@@ -821,6 +882,8 @@ export class PaymentsService {
         driver: dto.driver,
         wayCode: dto.wayCode ?? null,
         settleCurrency: dto.settleCurrency ?? null,
+        payCurrency: normalizeCurrency(dto.payCurrency),
+        payRate: dto.payRate ?? null,
         gatewayUrl: dto.gatewayUrl ?? null,
         credentialsEncrypted: encryptJson(this.secret(), dto.credentials ?? {}),
         rate: dto.rate ?? null,
@@ -844,6 +907,10 @@ export class PaymentsService {
         ...(dto.icon !== undefined ? { icon: dto.icon } : {}),
         ...(dto.wayCode !== undefined ? { wayCode: dto.wayCode } : {}),
         ...(dto.settleCurrency !== undefined ? { settleCurrency: dto.settleCurrency } : {}),
+        ...(dto.payCurrency !== undefined
+          ? { payCurrency: normalizeCurrency(dto.payCurrency) }
+          : {}),
+        ...(dto.payRate !== undefined ? { payRate: dto.payRate || null } : {}),
         ...(dto.gatewayUrl !== undefined ? { gatewayUrl: dto.gatewayUrl } : {}),
         ...(dto.credentials
           ? { credentialsEncrypted: encryptJson(this.secret(), dto.credentials) }
@@ -1075,6 +1142,10 @@ export interface ChannelInput {
   driver: 'jeepay' | 'epay' | 'usdt_trc20' | 'balance' | 'manual';
   wayCode?: string;
   settleCurrency?: string;
+  /** 顾客扫码时实际要输入的币种，如 KHR。留空 = 和面板计价币种一致 */
+  payCurrency?: string | null;
+  /** 手工汇率，留空 = 用当日实时汇率 */
+  payRate?: number | null;
   gatewayUrl?: string;
   credentials?: Record<string, any>;
   rate?: number;
@@ -1082,4 +1153,14 @@ export interface ChannelInput {
   isEnabled?: boolean;
   sortOrder?: number;
   descText?: string;
+}
+
+/**
+ * 币种代码统一成大写三字母。空串要变成 null 而不是留着 ——
+ * 留个空串在库里，`payCurrency: { not: null }` 那类查询就会把它捞出来，
+ * 然后每次付款都白跑一趟汇率接口。
+ */
+function normalizeCurrency(v?: string | null): string | null {
+  const c = (v ?? '').trim().toUpperCase();
+  return /^[A-Z]{3}$/.test(c) ? c : null;
 }

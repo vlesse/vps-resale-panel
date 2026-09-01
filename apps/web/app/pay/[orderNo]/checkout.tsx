@@ -5,15 +5,18 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
   api,
+  defaultChannel,
+  fetchQuote,
   formatDate,
   getToken,
   money,
+  type FxQuote,
   type OrderItem,
   type PayChannel,
   type PaymentStatus,
 } from '@/lib/api';
 import { Notice, PanelBar, Unit } from '@/components/ui';
-import { PayPanel } from '@/components/pay-panel';
+import { ChannelCard, FxCallout, PayPanel } from '@/components/pay-panel';
 
 interface OrderDetail extends OrderItem {
   plan?: { name: string; regionLabel: string; cpu: number; memoryMb: number; diskGb: number };
@@ -42,6 +45,7 @@ export function Checkout({ orderNo }: { orderNo: string }) {
   const [channels, setChannels] = useState<PayChannel[]>([]);
   const [picked, setPicked] = useState<string | null>(null);
   const [payInfo, setPayInfo] = useState<any>(null);
+  const [quote, setQuote] = useState<FxQuote | null>(null);
   const [status, setStatus] = useState<PaymentStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -71,7 +75,7 @@ export function Checkout({ orderNo }: { orderNo: string }) {
       .then(([o, c]) => {
         setOrder(o);
         setChannels(c);
-        setPicked(c[0]?.code ?? null);
+        setPicked(defaultChannel(c));
       })
       .catch((e) => setError(e.message));
     void loadStatus();
@@ -100,6 +104,27 @@ export function Checkout({ orderNo }: { orderNo: string }) {
     const t = setInterval(tick, 1000);
     return () => clearInterval(t);
   }, [order?.expiresAt, status?.paid]);
+
+  /**
+   * 「这单扫码时要输多少瑞尔」的预览。
+   *
+   * 订单金额是固定的，所以只在换支付方式时重新问一次。
+   * 拿不到就不显示 —— 汇率接口抽风不能挡住付款。
+   */
+  useEffect(() => {
+    const ch = channels.find((x) => x.code === picked);
+    if (!picked || !ch?.payCurrency || !order) {
+      setQuote(null);
+      return;
+    }
+    let alive = true;
+    void fetchQuote(picked, order.amountCents, order.currency).then((q) => {
+      if (alive) setQuote(q);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [picked, channels, order]);
 
   const pay = async () => {
     if (!picked) return;
@@ -257,29 +282,20 @@ export function Checkout({ orderNo }: { orderNo: string }) {
               <>
                 <div className="grid2">
                   {channels.map((c) => (
-                    <button
+                    <ChannelCard
                       key={c.code}
-                      type="button"
-                      onClick={() => setPicked(c.code)}
-                      className="well"
-                      style={{
-                        textAlign: 'left',
-                        cursor: 'pointer',
-                        border: 0,
-                        outline: picked === c.code ? '1px solid var(--accent)' : 'none',
-                        outlineOffset: 1,
-                      }}
-                    >
-                      <div style={{ color: 'var(--ink)', fontSize: 15 }}>{c.name}</div>
-                      {c.desc && <div className="hint" style={{ marginTop: 4 }}>{c.desc}</div>}
-                      {c.settleCurrency && (
-                        <div className="silk" style={{ fontSize: 9.5, marginTop: 6 }}>
-                          以 {c.settleCurrency} 结算
-                        </div>
-                      )}
-                    </button>
+                      channel={c}
+                      on={picked === c.code}
+                      onPick={() => setPicked(c.code)}
+                    />
                   ))}
                 </div>
+
+                {quote && (
+                  <div style={{ marginTop: 16 }}>
+                    <FxCallout quote={quote} cta="扫码后需要手动输入这个金额" />
+                  </div>
+                )}
 
                 {error && (
                   <div style={{ marginTop: 14 }}>

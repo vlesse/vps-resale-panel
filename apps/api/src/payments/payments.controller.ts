@@ -31,6 +31,18 @@ export class PaymentsController {
     return this.payments.driverSpecs();
   }
 
+  /**
+   * 「这笔钱换成瑞尔是多少」的预览。
+   *
+   * 不登录也能问：它只做一次汇率折算，不碰任何单据，也不吐用户数据。
+   * 页面上要在用户改金额的当下就更新，走认证只会多一层没必要的失败点。
+   */
+  @Public()
+  @Get('quote')
+  quote(@Query() q: { channel?: string; amountCents?: string; currency?: string }) {
+    return this.payments.quote(q?.channel ?? '', Number(q?.amountCents), q?.currency);
+  }
+
   /** 充值单付款。和订单付款走同一套通道，只是单子不同。 */
   @Post('recharge/:rechargeNo/pay')
   payRecharge(

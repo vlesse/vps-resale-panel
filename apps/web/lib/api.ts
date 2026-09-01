@@ -282,9 +282,61 @@ export interface PayChannel {
   icon: string | null;
   driver: string;
   settleCurrency: string | null;
+  /** 顾客扫码时实际要输入的币种（比如 KHR）。为 null 表示就按面板币种付。 */
+  payCurrency?: string | null;
   desc: string | null;
   /** 充值单能不能用这个方式付。余额通道不能（拿余额充余额没有意义）。 */
   usableForRecharge?: boolean;
+}
+
+/**
+ * 默认选中哪个支付方式。
+ *
+ * 不能直接取列表第一个。排序里排在最前的常常是「线下转账」——
+ * 它既不出二维码也不自动到账，用户点完付款只看到一句「转账后联系客服」，
+ * 会以为付款功能坏了（真发生过）。默认必须落在能当场付掉的通道上。
+ */
+export function defaultChannel(list: PayChannel[]): string | null {
+  const rank = (c: PayChannel) => (c.driver === 'manual' ? 2 : c.driver === 'balance' ? 1 : 0);
+  let best: PayChannel | null = null;
+  for (const c of list) if (!best || rank(c) < rank(best)) best = c;
+  return best?.code ?? null;
+}
+
+/**
+ * 「这笔钱换成当地币是多少」。
+ *
+ * 收款码是静态码时码里不带金额，顾客得自己在手机上输 —— 这个数字就是
+ * 他要输的那个。少显示一次，这笔钱就收错一次。
+ */
+export interface FxQuote {
+  currency: string;
+  label: string;
+  amount: number;
+  amountText: string;
+  rate: number;
+  rateText: string;
+  asOf: string;
+  /** false = 手工汇率，或者实时汇率拉不到时顶上的旧值 */
+  live: boolean;
+  source: string;
+}
+
+/** 选好通道、填好金额之后先问一下要付多少当地币。问不到就当没有，不挡付款。 */
+export async function fetchQuote(
+  channel: string,
+  amountCents: number,
+  currency?: string,
+): Promise<FxQuote | null> {
+  if (!channel || !(amountCents > 0)) return null;
+  const qs = new URLSearchParams({ channel, amountCents: String(amountCents) });
+  if (currency) qs.set('currency', currency);
+  try {
+    const r = await api.publicGet<{ quote: FxQuote | null }>(`/api/payments/quote?${qs}`);
+    return r.quote ?? null;
+  } catch {
+    return null;
+  }
 }
 
 // ---------- 展示辅助 ----------

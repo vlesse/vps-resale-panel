@@ -1437,6 +1437,68 @@ h1.title {
 
 
 /* 付款指引：二维码和文字并排，窄屏叠起来 */
+/* 支付方式卡片。
+   选中状态原来是一圈 1px outline，在这个配色下几乎看不见 ——
+   用户不知道自己选中的是哪个，默认落在「线下转账」上也毫无察觉，
+   然后点了付款只看到一句「转账后联系客服」，以为付款坏了。 */
+.chancard {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  border-color: var(--hairline);
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.chancard:hover {
+  border-color: var(--accent);
+}
+.chancard[data-on='true'] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.chanmark {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 3px;
+  border: 1px solid var(--hairline);
+  border-radius: 50%;
+  background: var(--surface);
+}
+.chanmark[data-on='true'] {
+  border-color: var(--accent);
+  background: radial-gradient(circle at center, var(--accent) 0 4px, transparent 4.5px);
+}
+
+/* 「扫码后请手动输入这个金额」。
+   静态收款码（柬埔寨 KHQR 那种）里不带金额，顾客得自己在手机上敲。
+   敲错就是收错钱，所以这一块要比页面上任何东西都显眼 —— 它是整个
+   付款流程里唯一一个用户不看就一定会出错的信息。 */
+.fxbox {
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--accent-soft);
+  padding: 14px 16px;
+}
+.fxbox-k {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: var(--accent-deep);
+  text-transform: uppercase;
+}
+.fxbox-v {
+  font-family: var(--f-mono);
+  font-size: 34px;
+  line-height: 1.15;
+  color: var(--accent-deep);
+  font-variant-numeric: tabular-nums;
+  word-break: break-all;
+}
+@media (max-width: 560px) {
+  .fxbox-v {
+    font-size: 28px;
+  }
+}
+
 .pay-usdt {
   display: flex;
   gap: 22px;

@@ -20,6 +20,7 @@ import { parseProbeOutput } from '../src/providers/ssh-exec.util';
 import { JeepayDriver } from '../src/payments/drivers/jeepay.driver';
 import { EpayDriver } from '../src/payments/drivers/epay.driver';
 import { UsdtDriver } from '../src/payments/drivers/usdt.driver';
+import { formatAmount, roundUpTo, stepFor } from '../src/payments/fx.service';
 
 let failed = 0;
 const check = (name: string, ok: boolean, extra = '') => {
@@ -297,7 +298,7 @@ console.log('\n[10] 网关返回的字段分类 —— 分错了用户点付款�
   // 以前按字段名分，它被当成跳转地址，前端 location.href 过去浏览器当场卡住。
   const emv =
     '00020101021130510016abaakhppxxx@abaa01151260715094150370208ABA Bank' +
-    '5204783253031165802KH5909JI YANLIN6010Phnom Penh6304DDE7';
+    '5204783253031165802KH5910TEST STORE6010Phnom Penh6304DDE7';
   const r1 = pick({ payData: emv });
   check('EMV 二维码不能被当成跳转地址', r1.payUrl === undefined);
   check('EMV 二维码要当成二维码内容', r1.codeUrl === emv);
@@ -317,6 +318,27 @@ console.log('\n[10] 网关返回的字段分类 —— 分错了用户点付款�
 
   check('空返回不炸', pick({}).payUrl === undefined && pick({}).codeUrl === undefined);
   void j;
+}
+
+console.log('\n[11] 汇率折算 —— 算少了是从商户口袋里出钱，算多了顾客当场就走');
+{
+  // 瑞尔没有小数位，往上取整到 1 瑞尔
+  check('瑞尔进位到整数', roundUpTo(30138.4, stepFor('KHR')) === 30139);
+  check('正好是整数就不动', roundUpTo(30139, stepFor('KHR')) === 30139);
+  check('浮点噪声不该多进一位', roundUpTo(30139.0000001, stepFor('KHR')) === 30139);
+  check('差一点点也要进上去，不能少收', roundUpTo(30139.01, stepFor('KHR')) === 30140);
+
+  // 两位小数的币种按分进位，别被瑞尔那套规则带偏
+  check('美元按分进位', roundUpTo(12.341, stepFor('USD')) === 12.35);
+  check('美元正好两位就不动', roundUpTo(12.34, stepFor('USD')) === 12.34);
+
+  // 零小数币种不写小数点 —— 写成 30139.00 瑞尔，当地人会以为是另一个数
+  check('瑞尔不写小数位', formatAmount(30139, 'KHR') === '30,139');
+  check('美元写两位小数', formatAmount(1234.5, 'USD') === '1,234.50');
+
+  // 从「分」换算过去：小数点挪错一位就是 100 倍的差
+  check('1 元 = 603 瑞尔', roundUpTo((100 / 100) * 602.77, stepFor('KHR')) === 603);
+  check('50 元 = 30139 瑞尔', roundUpTo((5000 / 100) * 602.77, stepFor('KHR')) === 30139);
 }
 
 console.log(failed === 0 ? '\n全部通过\n' : `\n有 ${failed} 项没过\n`);
