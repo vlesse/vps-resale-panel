@@ -1,4 +1,10 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { OrderStatus, RechargeStatus, UsdtIntentStatus, WalletTxType } from '@prisma/client';
@@ -209,21 +215,23 @@ export class PaymentsService {
         const gw = this.gatewayAmount(channel, target, quote);
 
         const gwNo = this.gatewayNo(target.no);
-        const result = await this.jeepay.createPayment(
-          { ...cred, gatewayUrl: channel.gatewayUrl || cred.gatewayUrl },
-          {
-            orderNo: gwNo,
-            amountCents: gw.amount,
-            currency: gw.currency,
-            wayCode: channel.wayCode || '',
-            subject: target.subject,
-            body: target.body,
-            notifyUrl: `${this.baseUrl()}/api/payments/jeepay/notify`,
-            returnUrl: this.returnUrl(target),
-            clientIp,
-            // 已经折算过就别让驱动再乘一次
-            rate: gw.converted ? undefined : channel.rate ?? undefined,
-          },
+        const result = await this.callGateway(channel.name, () =>
+          this.jeepay.createPayment(
+            { ...cred, gatewayUrl: channel.gatewayUrl || cred.gatewayUrl },
+            {
+              orderNo: gwNo,
+              amountCents: gw.amount,
+              currency: gw.currency,
+              wayCode: channel.wayCode || '',
+              subject: target.subject,
+              body: target.body,
+              notifyUrl: `${this.baseUrl()}/api/payments/jeepay/notify`,
+              returnUrl: this.returnUrl(target),
+              clientIp,
+              // 已经折算过就别让驱动再乘一次
+              rate: gw.converted ? undefined : channel.rate ?? undefined,
+            },
+          ),
         );
         await this.rememberGatewayRefs(target, gwNo, result.payOrderId);
         return {
@@ -291,6 +299,27 @@ export class PaymentsService {
    */
   private gatewayNo(no: string): string {
     return `${no}-${Date.now().toString(36).slice(-6)}`;
+  }
+
+  /**
+   * 调网关，失败时把真正的原因透给用户。
+   *
+   * 驱动里抛的是普通 Error，NestJS 会把它一律变成 500「Internal server error」——
+   * 网关宕了、域名解析到了一个死 IP、证书过期，用户看到的全都是同一句毫无信息量的话，
+   * 只会以为是面板坏了然后一直点。驱动里那些报错本来就是写给人看的，别在最后一步丢掉。
+   *
+   * 用 503 而不是 400：这不是用户填错了什么，是我们依赖的外部服务不可用。
+   */
+  private async callGateway<T>(channelName: string, fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (err: any) {
+      const msg = String(err?.message ?? err);
+      this.logger.error(`调用支付通道「${channelName}」失败：${msg}`);
+      throw new ServiceUnavailableException(
+        `${msg}。这笔钱还没扣，可以过一会儿再试，或者换一个支付方式。`,
+      );
+    }
   }
 
   /**
