@@ -191,10 +191,20 @@ export class PaymentsService {
       case 'jeepay': {
         await remember();
         const cred = decryptJson<JeepayCredentials>(this.secret(), channel.credentialsEncrypted);
+
+        // 再发一张码之前，先问一句上一张付掉没有。
+        //
+        // 用户点第二次的原因往往是「付了但页面没反应」。这时候直接给他第二张码，
+        // 就等于同时有两张有效的码挂在那，他很可能两张都扫 —— 真付两笔。
+        // 先问一句，付掉了就当场入账，别再出码。
+        const prior = await this.settledAlready(target);
+        if (prior) return prior;
+
+        const gwNo = this.gatewayNo(target.no);
         const result = await this.jeepay.createPayment(
           { ...cred, gatewayUrl: channel.gatewayUrl || cred.gatewayUrl },
           {
-            orderNo: this.gatewayNo(target.no),
+            orderNo: gwNo,
             amountCents: this.convertAmount(target.amountCents, target.currency, channel),
             currency: channel.settleCurrency || target.currency,
             wayCode: channel.wayCode || '',
@@ -206,6 +216,7 @@ export class PaymentsService {
             rate: channel.rate ?? undefined,
           },
         );
+        await this.rememberGatewayRefs(target, gwNo, result.payOrderId);
         return {
           kind: 'gateway' as const,
           codeUrl: result.codeUrl,
@@ -219,8 +230,9 @@ export class PaymentsService {
         await remember();
         const cred = decryptJson<EpayCredentials>(this.secret(), channel.credentialsEncrypted);
         const full = { ...cred, gatewayUrl: channel.gatewayUrl || cred.gatewayUrl };
+        const gwNo = this.gatewayNo(target.no);
         const req = {
-          orderNo: this.gatewayNo(target.no),
+          orderNo: gwNo,
           amountCents: this.convertAmount(target.amountCents, target.currency, channel),
           payType: channel.wayCode || 'alipay',
           subject: target.subject,
@@ -231,6 +243,7 @@ export class PaymentsService {
         };
         try {
           const r = await this.epay.createPayment(full, req);
+          await this.rememberGatewayRefs(target, gwNo, r.tradeNo);
           return {
             kind: 'gateway' as const,
             codeUrl: r.qrCode,
@@ -269,6 +282,67 @@ export class PaymentsService {
    */
   private gatewayNo(no: string): string {
     return `${no}-${Date.now().toString(36).slice(-6)}`;
+  }
+
+  /**
+   * 这笔单之前提交过的那次，是不是其实已经付掉了。
+   *
+   * 付掉了就当场入账并返回一个「已到账」，不要再发第二张码。
+   * 查不了或者没付掉就返回 null，照常往下走出码。
+   *
+   * 查单本身出错绝不能挡住付款：网关的查单接口挂了是它的事，
+   * 用户该付的款还是得能付。
+   */
+  private async settledAlready(target: PayTarget) {
+    const row =
+      target.kind === 'recharge'
+        ? await this.prisma.rechargeOrder.findUnique({ where: { rechargeNo: target.no } })
+        : await this.prisma.order.findUnique({ where: { orderNo: target.no } });
+    if (!row?.gatewayOrderNo && !row?.upstreamNo) return null;
+    try {
+      const r = await this.askGateway(row!.payChannel, {
+        payOrderId: row!.upstreamNo,
+        mchOrderNo: row!.gatewayOrderNo,
+      });
+      if (!r?.paid) return null;
+      this.logger.warn(`${target.no} 用户再次点付款时发现上一笔其实已支付，补入账`);
+      await this.settle(target.kind, target.no, {
+        channel: row!.payChannel!,
+        upstreamNo: r.payOrderId,
+        amountCents: r.amountCents,
+        raw: r.raw,
+      });
+      return {
+        kind: 'paid' as const,
+        message: '这笔款其实已经收到了，刚刚给你补上了，不用再付一次。',
+      };
+    } catch (err: any) {
+      this.logger.warn(`出码前查单失败，照常出码：${err?.message ?? err}`);
+      return null;
+    }
+  }
+
+  /**
+   * 把「我们提交给网关的单号」和「网关给的支付单号」落库。
+   *
+   * 不落库的后果很实在：回调一旦丢了，我们手里就只剩自己的 RCH 号，
+   * 而提交给网关的是带随机后缀的号 —— 想回头问一句「这笔到底收到没有」
+   * 都问不出口，只能翻服务商后台人工对账。
+   *
+   * 失败不能影响付款：单号没记上顶多是回头查不了，
+   * 而这里一抛异常用户当场就付不了款了。
+   */
+  private async rememberGatewayRefs(target: PayTarget, gatewayOrderNo: string, upstreamNo?: string) {
+    const data = { gatewayOrderNo, ...(upstreamNo ? { upstreamNo } : {}) };
+    try {
+      if (target.kind === 'order') {
+        await this.prisma.order.update({ where: { orderNo: target.no }, data });
+      } else {
+        await this.prisma.rechargeOrder.update({ where: { rechargeNo: target.no }, data });
+      }
+    } catch (err: any) {
+      this.logger.warn(`记录网关单号失败（不影响本次付款）：${err?.message ?? err}`);
+    }
   }
 
   /** 回调里带回来的号削掉后缀，还原成我们自己的单号 */
@@ -478,6 +552,143 @@ export class PaymentsService {
       txId: i.txId,
       paidAt: i.paidAt,
       expiresAt: i.expiresAt,
+    };
+  }
+
+  // ---------- 主动查单 ----------
+
+  /**
+   * 反过来问网关：这些还没到账的单子，你那边到底收到钱没有。
+   *
+   * 回调是「网关主动告诉我们」。它会丢 —— 网络抖一下、我们正好在重启、
+   * 上游压根没发，都会丢。丢了如果没有第二条路，结果就是用户付了钱余额不动，
+   * 而且两边日志都干干净净，谁都不知道出了事。**收款不能只有一条路。**
+   *
+   * 已经超时/取消的单子也照查：付款迟到得比超时晚是常事（尤其扫码要人工输金额）。
+   * 查到了照样往下走 —— 充值会正常入账，订单不自动开通但会吼出来并留备注。
+   */
+  @Cron(CronExpression.EVERY_MINUTE)
+  async pollGatewayOrders() {
+    // 一天以前的不再问了：真到那份上已经不是自动化能解决的问题，得人工对账
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+    const [recharges, orders] = await Promise.all([
+      this.prisma.rechargeOrder.findMany({
+        where: {
+          gatewayOrderNo: { not: null },
+          status: { in: [RechargeStatus.pending_payment, RechargeStatus.expired] },
+          updatedAt: { gte: since },
+        },
+        orderBy: { id: 'desc' },
+        take: 50,
+      }),
+      this.prisma.order.findMany({
+        where: {
+          gatewayOrderNo: { not: null },
+          status: { in: [OrderStatus.pending_payment, OrderStatus.cancelled] },
+          updatedAt: { gte: since },
+        },
+        orderBy: { id: 'desc' },
+        take: 50,
+      }),
+    ]);
+
+    const targets = [
+      ...recharges.map((r) => ({ kind: 'recharge' as const, no: r.rechargeNo, row: r })),
+      ...orders.map((o) => ({ kind: 'order' as const, no: o.orderNo, row: o })),
+    ];
+    if (targets.length === 0) return;
+
+    const summary: string[] = [];
+    for (const t of targets) {
+      try {
+        const r = await this.askGateway(t.row.payChannel, {
+          payOrderId: t.row.upstreamNo,
+          mchOrderNo: t.row.gatewayOrderNo,
+        });
+        if (!r) continue; // 这个驱动不支持查单
+        summary.push(`${t.no}=${r.stateText}`);
+        if (r.paid) {
+          this.logger.warn(`${t.no} 网关说已支付，但我们没收到回调 —— 现在补上`);
+          await this.settle(t.kind, t.no, {
+            channel: t.row.payChannel!,
+            upstreamNo: r.payOrderId,
+            amountCents: r.amountCents,
+            raw: r.raw,
+          });
+        }
+      } catch (err: any) {
+        summary.push(`${t.no}=查单出错(${err?.message ?? err})`);
+      }
+    }
+
+    // 故意每轮都记一行：一个从来不出声的轮询器，和一个坏掉的轮询器，
+    // 在日志里长得一模一样。有待付款的时候最多一分钟一行，不算吵。
+    if (summary.length) this.logger.log(`轮询网关 ${summary.length} 笔：${summary.join('　')}`);
+  }
+
+  /**
+   * 问某个通道要一笔单子的状态。返回 null 表示这个驱动没法查。
+   *
+   * 目前只有 Jeepay 实现了查单。易支付各家的查单接口差异很大（有的要把密钥
+   * 明文拼在 URL 上），USDT 本来就是我们自己盯链、不存在「问网关」这回事。
+   */
+  private async askGateway(
+    channelCode: string | null,
+    ref: { payOrderId?: string | null; mchOrderNo?: string | null },
+  ) {
+    if (!channelCode) return null;
+    const channel = await this.prisma.payChannel.findUnique({ where: { code: channelCode } });
+    if (!channel || channel.driver !== 'jeepay') return null;
+    const cred = decryptJson<JeepayCredentials>(this.secret(), channel.credentialsEncrypted);
+    return this.jeepay.queryOrder(
+      { ...cred, gatewayUrl: channel.gatewayUrl || cred.gatewayUrl },
+      ref,
+    );
+  }
+
+  /**
+   * 管理员手动问一笔。
+   *
+   * 轮询器一分钟跑一次，但客服在电话里对着用户查的时候等不了一分钟，
+   * 而且需要看到网关的原话 —— 「订单不存在」和「支付中」是完全不同的两件事。
+   */
+  async adminQueryGateway(kind: 'order' | 'recharge', no: string) {
+    const row =
+      kind === 'recharge'
+        ? await this.prisma.rechargeOrder.findUnique({ where: { rechargeNo: no } })
+        : await this.prisma.order.findUnique({ where: { orderNo: no } });
+    if (!row) throw new NotFoundException('单据不存在');
+    if (!row.gatewayOrderNo && !row.upstreamNo) {
+      return {
+        ok: false,
+        message: '这笔单还没提交给任何支付网关，没什么可查的',
+      };
+    }
+    const r = await this.askGateway(row.payChannel, {
+      payOrderId: row.upstreamNo,
+      mchOrderNo: row.gatewayOrderNo,
+    });
+    if (!r) {
+      return { ok: false, message: `通道 ${row.payChannel} 的驱动不支持查单` };
+    }
+    if (r.paid) {
+      await this.settle(kind, no, {
+        channel: row.payChannel!,
+        upstreamNo: r.payOrderId,
+        amountCents: r.amountCents,
+        raw: r.raw,
+      });
+    }
+    return {
+      ok: true,
+      paid: r.paid,
+      found: r.found,
+      message: r.paid ? `网关确认已支付，已入账：${r.stateText}` : `网关说：${r.stateText}`,
+      submittedNo: row.gatewayOrderNo,
+      upstreamNo: r.payOrderId ?? row.upstreamNo,
+      gatewayAmount: r.amountCents,
+      raw: r.raw,
     };
   }
 

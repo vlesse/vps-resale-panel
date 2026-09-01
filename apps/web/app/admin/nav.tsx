@@ -13,6 +13,7 @@ const TABS = [
   ['/admin/machines', '机器'],
   ['/admin/nat', 'NAT 入口'],
   ['/admin/orders', '订单'],
+  ['/admin/recharges', '充值'],
   ['/admin/pay-channels', '支付'],
   ['/admin/users', '用户'],
 ] as const;

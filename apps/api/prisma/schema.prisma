@@ -381,6 +381,10 @@ model Order {
   customSpecJson Json? @map("custom_spec_json")
 
   payChannel   String?   @map("pay_channel") @db.VarChar(32)
+  // 最后一次提交给网关的商户单号，以及网关给的支付单号。
+  // 两个都得存：回调丢了的时候，只有靠它们才能回头问网关这笔到底收到没有。
+  gatewayOrderNo String? @map("gateway_order_no") @db.VarChar(80)
+  upstreamNo     String? @map("upstream_no") @db.VarChar(64)
   paidAt       DateTime? @map("paid_at")
   expiresAt    DateTime? @map("expires_at") // 未付款订单的自动取消时间
   failReason   String?   @map("fail_reason") @db.VarChar(500)
@@ -734,6 +738,9 @@ model RechargeOrder {
 
   payChannel String?   @map("pay_channel") @db.VarChar(32)
   upstreamNo String?   @map("upstream_no") @db.VarChar(64)
+  // 最后一次提交给网关的商户单号（我们自己的单号 + 时间戳后缀）。
+  // 不存下来就没法回头问网关「这笔到底收到没有」—— 回调丢了就只能人工对账。
+  gatewayOrderNo String? @map("gateway_order_no") @db.VarChar(80)
   rawNotifyJson Json?  @map("raw_notify_json")
   paidAt     DateTime? @map("paid_at")
   expiresAt  DateTime? @map("expires_at")

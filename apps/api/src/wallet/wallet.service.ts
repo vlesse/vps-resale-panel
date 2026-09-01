@@ -380,6 +380,10 @@ export class WalletService {
       rows: rows.map((r) => ({
         ...this.toPublicRecharge(r),
         user: { id: r.user.id.toString(), email: r.user.email },
+        // 对账用：提交给网关的单号和网关给的支付单号。
+        // 用户说付了而余额没动的时候，拿这两个号去服务商后台一查就知道是谁的问题。
+        gatewayOrderNo: r.gatewayOrderNo,
+        upstreamNo: r.upstreamNo,
       })),
     };
   }

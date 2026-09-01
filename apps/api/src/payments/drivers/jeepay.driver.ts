@@ -149,6 +149,77 @@ export class JeepayDriver {
   }
 
   /**
+   * 反过来问网关：这笔到底收到没有。
+   *
+   * 回调是「网关主动告诉我们」，这个是「我们主动去问」。两者缺一不可 ——
+   * 回调会丢（网络抖动、我们这边正好在重启、上游根本没发），
+   * 丢了如果没有第二条路，用户就是付了钱余额不动，而且谁都不知道。
+   *
+   * 优先用 payOrderId 问：它是网关侧的主键，唯一且不受我们加后缀的影响。
+   */
+  async queryOrder(
+    cred: JeepayCredentials,
+    ref: { payOrderId?: string | null; mchOrderNo?: string | null },
+  ): Promise<{
+    found: boolean;
+    state: number | null;
+    stateText: string;
+    paid: boolean;
+    amountCents?: number;
+    payOrderId?: string;
+    mchOrderNo?: string;
+    raw: Record<string, any>;
+  }> {
+    if (!ref.payOrderId && !ref.mchOrderNo) {
+      throw new Error('查单至少要给一个单号');
+    }
+    const params: Record<string, any> = {
+      mchNo: cred.mchNo,
+      appId: cred.appId,
+      ...(ref.payOrderId ? { payOrderId: ref.payOrderId } : {}),
+      ...(ref.mchOrderNo ? { mchOrderNo: ref.mchOrderNo } : {}),
+      reqTime: Date.now(),
+      version: '1.0',
+      signType: 'MD5',
+    };
+    params.sign = this.sign(params, cred.appSecret);
+
+    const url = `${cred.gatewayUrl.replace(/\/+$/, '')}/api/pay/query`;
+    let res: any;
+    try {
+      res = await axios.post(url, params, {
+        timeout: 15000,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (err: any) {
+      throw new Error(this.explainNetwork(err, cred.gatewayUrl));
+    }
+
+    const data = res.data ?? {};
+    if (data.code !== 0) {
+      // 「订单不存在」不是故障，是一个明确的答案：网关那边压根没有这笔。
+      const msg = String(data?.msg ?? data?.message ?? '');
+      if (/不存在|not.?found/i.test(msg)) {
+        return { found: false, state: null, stateText: `网关说没有这笔单：${msg}`, paid: false, raw: data };
+      }
+      throw new Error(this.explainGateway(data));
+    }
+
+    const d = data.data ?? {};
+    const state = d.state == null ? null : Number(d.state);
+    return {
+      found: true,
+      state,
+      stateText: STATE_TEXT[String(state)] ?? `未知状态 ${state}`,
+      paid: state === 2,
+      amountCents: d.amount != null ? Number(d.amount) : undefined,
+      payOrderId: d.payOrderId,
+      mchOrderNo: d.mchOrderNo,
+      raw: d,
+    };
+  }
+
+  /**
    * 解析回调。
    *
    * Jeepay 用 state 表示状态，2 才是支付成功。
@@ -255,3 +326,14 @@ export class JeepayDriver {
 function isNavigable(v: string): boolean {
   return /^[a-z][a-z0-9+.-]*:\/\//i.test(v.trim());
 }
+
+/** Jeepay 的订单状态。只有 2 是收到钱了，别的都不是。 */
+const STATE_TEXT: Record<string, string> = {
+  '0': '订单已生成，还没人付',
+  '1': '支付中（用户已经扫了，钱还没确认到）',
+  '2': '支付成功',
+  '3': '支付失败',
+  '4': '已撤销',
+  '5': '已退款',
+  '6': '订单已关闭',
+};

@@ -206,6 +206,11 @@ export default function WalletPage() {
           channel: picked,
         });
         setPayInfo(info);
+        // 后端发现这笔其实已经付过了（回调丢了，查单查出来的），当场就入账了
+        if (info.kind === 'paid') {
+          setPending(null);
+          setFlash(info.message ?? '这笔款已经收到了。');
+        }
         // 跳不了（比如拿到的是二维码内容）就把付款指引滚到眼前。
         // 它渲染在「充值」卡片下面，小屏上正好在折叠线以下 ——
         // 不滚过去的话用户看不到任何变化，只会以为点了没反应。
@@ -230,7 +235,12 @@ export default function WalletPage() {
         channel: picked,
       });
       setPayInfo(info);
+      if (info.kind === 'paid') {
+        setPending(null);
+        setFlash(info.message ?? '这笔款已经收到了。');
+      }
       if (!navigate(info.payUrl)) scrollToPay();
+      await load();
     } catch (e: any) {
       setError(e.message);
     } finally {

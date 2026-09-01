@@ -129,6 +129,18 @@ export class AdminPayChannelsController {
     return this.payments.verifyChannel(BigInt(id));
   }
 
+  /**
+   * 反过来问网关：这笔到底收到钱没有。
+   *
+   * 回调丢了的时候这是唯一能自证清白的东西 —— 用户说付了，
+   * 我们这边余额没动，网关的原话能立刻分出是谁的问题。
+   * 查到已支付会当场入账。
+   */
+  @Post('query/:kind/:no')
+  queryGateway(@Param('kind') kind: string, @Param('no') no: string) {
+    return this.payments.adminQueryGateway(kind === 'order' ? 'order' : 'recharge', no);
+  }
+
   @Delete(':id')
   remove(@Param('id') id: string) {
     return this.payments.deleteChannel(BigInt(id));

@@ -176,6 +176,17 @@ export function PayPanel({ info }: { info: PayInfo }) {
     );
   }
 
+  if (info.kind === 'paid') {
+    return (
+      <Unit>
+        <PanelBar title="已到账" />
+        <div className="panelbody">
+          <Notice tone="ok">{info.message ?? '这笔款已经收到了。'}</Notice>
+        </div>
+      </Unit>
+    );
+  }
+
   if (info.kind === 'manual') {
     return (
       <Unit>
