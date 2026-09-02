@@ -510,7 +510,8 @@ export class PaymentsService {
     channel: { code: string; credentialsEncrypted: string; payCurrency: string | null; payRate: number | null },
   ) {
     const cred = decryptJson<AbaKhqrCredentials>(this.secret(), channel.credentialsEncrypted);
-    if (!cred.qrPayload) {
+    const codes = this.aba.parseQrList(cred.qrPayload);
+    if (codes.length === 0) {
       throw new BadRequestException('这个通道还没配收款码，先去后台补上');
     }
 
@@ -524,7 +525,8 @@ export class PaymentsService {
       },
       orderBy: { id: 'desc' },
     });
-    if (exist) return this.khqrPayload(exist, cred.qrPayload);
+    // 重来一次要拿到**一模一样**的码和金额，换来换去用户会以为要付几笔
+    if (exist) return this.khqrPayload(exist);
 
     const currency = (channel.payCurrency || 'KHR').toUpperCase();
     const quote = await this.fx.quoteFor(
@@ -555,6 +557,7 @@ export class PaymentsService {
     let amount = this.aba.pickUniqueAmount(base, taken);
 
     const minutes = Number(this.config.get('KHQR_EXPIRE_MINUTES') ?? 30);
+    const qrPayload = await this.nextQr(channel.code, codes);
 
     // 上面那次「查已占用的再挑一个」挡不住并发：两个请求同时读到同一份列表
     // 就可能挑到同一个数。activeKey 上有唯一索引，真撞了会抛 P2002，换一个重来。
@@ -568,13 +571,14 @@ export class PaymentsService {
             channelCode: channel.code,
             amount,
             currency,
+            qrPayload,
             activeKey: `${channel.code}:${currency}:${amount}`,
             sourceAmountCents: target.amountCents,
             sourceCurrency: target.currency as any,
             expiresAt: new Date(Date.now() + minutes * 60_000),
           },
         });
-        return this.khqrPayload(intent, cred.qrPayload);
+        return this.khqrPayload(intent);
       } catch (err: any) {
         if (err?.code !== 'P2002') throw err;
         this.logger.warn(`金额 ${amount} ${currency} 被别的单抢先占了，换一个`);
@@ -587,14 +591,40 @@ export class PaymentsService {
     );
   }
 
-  private khqrPayload(
-    intent: { intentNo: string; amount: number; currency: string; expiresAt: Date },
-    qrPayload: string,
-  ) {
+  /**
+   * 轮流用配置里的收款码。
+   *
+   * 收款方常常有两三个码轮着用 —— 不同的收款账户，分散单账户的收款限额。
+   * 这里保持同样的行为。
+   *
+   * 轮换**不影响认单**：几个码收的钱都进同一个通知群，而认单只看金额，
+   * 跟用了哪个码无关。所以游标偶尔并发多走一格也没关系，
+   * 最坏就是某张码多用一次。
+   */
+  private async nextQr(channelCode: string, codes: string[]): Promise<string> {
+    if (codes.length === 1) return codes[0];
+    const key = `khqr_cursor:${channelCode}`;
+    const saved = await this.prisma.keyValue.findUnique({ where: { key } });
+    const n = (Number(saved?.value ?? 0) || 0) + 1;
+    await this.prisma.keyValue.upsert({
+      where: { key },
+      create: { key, value: String(n) },
+      update: { value: String(n) },
+    });
+    return codes[n % codes.length];
+  }
+
+  private khqrPayload(intent: {
+    intentNo: string;
+    amount: number;
+    currency: string;
+    qrPayload: string;
+    expiresAt: Date;
+  }) {
     const label = this.fx.labelOf(intent.currency);
     return {
       kind: 'khqr' as const,
-      qrPayload,
+      qrPayload: intent.qrPayload,
       amount: intent.amount,
       amountText: formatAmount(intent.amount / minorUnits(intent.currency), intent.currency),
       currency: intent.currency,
@@ -1708,9 +1738,12 @@ export const DRIVER_SPECS: DriverSpec[] = [
       {
         key: 'qrPayload',
         label: '固定收款码内容',
-        type: 'text',
+        type: 'textarea',
         required: true,
-        hint: '以 000201 开头的那一长串。付款页上「二维码内容」那一栏可以直接抄。',
+        hint:
+          '以 000201 开头的那一长串。付款页上「二维码内容」那一栏可以直接抄。' +
+          '有几个码轮着用的话，**一行一个**全填进来，面板会轮流发 —— ' +
+          '认单只看金额，跟用了哪个码无关，所以填几个都不影响到账。',
       },
     ],
   },

@@ -380,6 +380,18 @@ console.log('\n[12] 到账通知的解析 —— 认错了是凭空给人加钱�
   check('没有金额不认', a.parseNotice('Trx. ID: 123456') === null);
   check('空消息不炸', a.parseNotice('') === null);
 
+  // 多个收款码轮着用：拆错了要么少发一张，要么把两张拼成一张
+  const two = a.parseQrList('000201aaa\n000201bbb');
+  check('一行一个能拆开', two.length === 2 && two[0] === '000201aaa');
+  check(
+    '空行和空白要忽略',
+    a.parseQrList('  000201aaa  \n\n\n  000201bbb\n').length === 2,
+  );
+  check('只有一个也正常', a.parseQrList('000201aaa').length === 1);
+  check('空配置拆出空数组', a.parseQrList('').length === 0);
+  check('像收款码', a.looksLikeQr('00020101021130510016abaakhppxxx@abaa'));
+  check('不像的挡下来', !a.looksLikeQr('https://pay.example.com/x'));
+
   // 唯一金额只能往上加 —— 往下减就是少收钱
   check('没占用就用原数', a.pickUniqueAmount(604, new Set()) === 604);
   check('被占了往上让', a.pickUniqueAmount(604, new Set([604, 605])) === 606);

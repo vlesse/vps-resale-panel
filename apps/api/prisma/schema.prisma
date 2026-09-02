@@ -622,6 +622,12 @@ model KhqrIntent {
 
   status KhqrIntentStatus @default(pending)
 
+  /// 这一单发出去的是哪张收款码。
+  ///
+  /// 存下来而不是每次现算：收款方常常有几个码轮着用，用户刷新页面看到的
+  /// 必须还是同一张，换来换去他会以为要付几笔。对账时也要知道钱该进哪个账户。
+  qrPayload String @map("qr_payload") @db.Text
+
   /// 银行流水号。加唯一约束是为了同一笔到账通知重复出现时不会入账两次。
   txId      String?   @unique @map("tx_id") @db.VarChar(64)
   rawNotice String?   @map("raw_notice") @db.Text

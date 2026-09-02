@@ -29,7 +29,15 @@ export interface AbaKhqrCredentials {
   botToken: string;
   /** 只认这个群的消息。留空则不限（不建议 —— 别的群发一句就能骗到入账）。 */
   chatId?: string;
-  /** 固定收款码的内容，就是付款页上显示的那一长串 */
+  /**
+   * 固定收款码的内容，一行一个。
+   *
+   * 可以填多个 —— 收款方常常有两三个码轮着用（不同的收款账户，
+   * 分散单账户的收款限额）。填多个的话面板按顺序轮流发。
+   *
+   * 轮换**不影响认单**：几个码收的钱都进同一个 Telegram 通知群，
+   * 而认单只看金额，跟用了哪个码无关。
+   */
   qrPayload: string;
 }
 
@@ -83,6 +91,24 @@ export class AbaKhqrDriver {
     const amount = NO_DECIMALS.has(currency) ? Math.round(num) : Math.round(num * 100);
 
     return { amount, currency, txId: trx[1], raw: text.slice(0, 1000) };
+  }
+
+  /**
+   * 把配置里那一坨拆成一个个收款码。
+   *
+   * 一行一个，空行和前后空白都忽略 —— 从别处复制过来常常带着一堆空白，
+   * 不清理的话校验会莫名其妙地不过。
+   */
+  parseQrList(raw: string): string[] {
+    return (raw ?? '')
+      .split(/[\r\n]+/)
+      .map((x) => x.trim())
+      .filter(Boolean);
+  }
+
+  /** 看着像不像一张 EMV 收款码 */
+  looksLikeQr(v: string): boolean {
+    return /^000201/.test(v.trim());
   }
 
   /**
@@ -153,11 +179,16 @@ export class AbaKhqrDriver {
     cred: AbaKhqrCredentials,
   ): Promise<{ ok: boolean; message: string; detail?: Record<string, any> }> {
     if (!cred.botToken) return { ok: false, message: '要填 Telegram bot 的 token' };
-    if (!cred.qrPayload) {
+    const codes = this.parseQrList(cred.qrPayload);
+    if (codes.length === 0) {
       return { ok: false, message: '要填固定收款码的内容（付款页上「二维码内容」那一长串）' };
     }
-    if (!/^0002/.test(cred.qrPayload.trim())) {
-      return { ok: false, message: '收款码内容看着不像 EMV 二维码（正常应该以 000201 开头）' };
+    const bad = codes.findIndex((c) => !this.looksLikeQr(c));
+    if (bad >= 0) {
+      return {
+        ok: false,
+        message: `第 ${bad + 1} 个收款码看着不像 EMV 二维码（正常应该以 000201 开头）。多个码要一行一个。`,
+      };
     }
 
     let me: any;
@@ -197,7 +228,7 @@ export class AbaKhqrDriver {
     return {
       ok: true,
       message:
-        `Telegram 连通，bot 是 @${me.result?.username}。` +
+        `Telegram 连通，bot 是 @${me.result?.username}，收款码 ${codes.length} 个（会轮流发）。` +
         `还要确认两件事：这个 bot 已经在收款通知群里，而且能读到群消息` +
         `（BotFather 里 /setprivacy 设成 Disable，或者把它设成群管理员）。`,
       detail: { bot: me.result?.username },

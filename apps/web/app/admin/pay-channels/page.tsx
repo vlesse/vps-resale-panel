@@ -217,13 +217,22 @@ export default function PayChannels() {
                     {cf.label}
                     {!cf.required && <span className="silk">（选填）</span>}
                   </label>
-                  <input
-                    className="input"
-                    type={cf.type === 'password' ? 'password' : 'text'}
-                    autoComplete="off"
-                    spellCheck={false}
-                    {...set(cf.key)}
-                  />
+                  {cf.type === 'textarea' ? (
+                    <textarea
+                      className="textarea"
+                      style={{ minHeight: 90, fontFamily: 'var(--f-mono)', fontSize: 12 }}
+                      spellCheck={false}
+                      {...set(cf.key)}
+                    />
+                  ) : (
+                    <input
+                      className="input"
+                      type={cf.type === 'password' ? 'password' : 'text'}
+                      autoComplete="off"
+                      spellCheck={false}
+                      {...set(cf.key)}
+                    />
+                  )}
                   {cf.hint && <span className="hint">{cf.hint}</span>}
                 </div>
               ))}
