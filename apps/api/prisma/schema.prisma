@@ -578,6 +578,79 @@ model FxRate {
   @@map("fx_rates")
 }
 
+enum KhqrIntentStatus {
+  pending
+  paid
+  expired
+}
+
+/**
+ * 「等一笔金额刚好对得上的钱」。
+ *
+ * 用在收款码是**固定码**、而且收款行没有 API 的场景：钱直接进商户账户，
+ * 没有任何人能告诉我们「这笔是哪张单的」。唯一能用的线索就是金额 ——
+ * 所以每张单分一个别人没占用的精确金额，到账通知里金额对上就是它。
+ *
+ * 和 UsdtIntent 是同一套思路，只是数据源从链上换成了银行推到 Telegram 的到账通知。
+ * 没有合并成一张表：两边的字段（地址 / 交易号、精度、过期时长）差得够多，
+ * 硬并到一起会变成一堆「这一列在另一种情况下不用」。
+ */
+model KhqrIntent {
+  id       BigInt @id @default(autoincrement())
+  intentNo String @unique @map("intent_no") @db.VarChar(64)
+
+  /// order 或 recharge
+  refType String @map("ref_type") @db.VarChar(16)
+  refNo   String @map("ref_no") @db.VarChar(64)
+
+  channelCode String @map("channel_code") @db.VarChar(48)
+
+  /// 要求支付的精确金额，单位是该币种的最小单位（瑞尔没有小数，就是瑞尔本身）
+  amount   Int
+  currency String @db.VarChar(8)
+
+  /// 「这个通道上这个币种的这个金额正被占用」的唯一键。
+  ///
+  /// 只在 pending 时有值，结束后置 NULL —— MySQL 的唯一索引允许多个 NULL，
+  /// 所以历史记录不会互相冲突，而同一时刻不可能有两张单占同一个金额。
+  /// 代码里「先查已占用的再挑一个」挡不住并发，这是数据库层面的最后一道闸。
+  activeKey String? @unique @map("active_key") @db.VarChar(96)
+
+  /// 这笔单原本的价钱，对账时要看
+  sourceAmountCents Int          @map("source_amount_cents")
+  sourceCurrency    CurrencyCode @map("source_currency")
+
+  status KhqrIntentStatus @default(pending)
+
+  /// 银行流水号。加唯一约束是为了同一笔到账通知重复出现时不会入账两次。
+  txId      String?   @unique @map("tx_id") @db.VarChar(64)
+  rawNotice String?   @map("raw_notice") @db.Text
+  paidAt    DateTime? @map("paid_at")
+  expiresAt DateTime  @map("expires_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([refType, refNo])
+  @@index([status, expiresAt])
+  @@map("khqr_intents")
+}
+
+/**
+ * 一张极小的键值表。
+ *
+ * 目前只放 Telegram 的 getUpdates 偏移量：它必须持久化，否则每次重启都会
+ * 把最近 24 小时的到账通知重放一遍。为这一个值单开一张表不值当，
+ * 以后同类的「一个字符串状态」也放这里。
+ */
+model KeyValue {
+  key       String   @id @db.VarChar(64)
+  value     String   @db.Text
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("kv")
+}
+
 // ---------- 审计 ----------
 
 model OperationLog {

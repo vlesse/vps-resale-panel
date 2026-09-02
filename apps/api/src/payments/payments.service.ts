@@ -7,7 +7,13 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { OrderStatus, RechargeStatus, UsdtIntentStatus, WalletTxType } from '@prisma/client';
+import {
+  KhqrIntentStatus,
+  OrderStatus,
+  RechargeStatus,
+  UsdtIntentStatus,
+  WalletTxType,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { OrdersService } from '../orders/orders.service';
 import { WalletService } from '../wallet/wallet.service';
@@ -15,7 +21,8 @@ import { decryptJson, encryptJson, generateCode, tryDecryptJson } from '../crypt
 import { JeepayCredentials, JeepayDriver } from './drivers/jeepay.driver';
 import { EpayCredentials, EpayDriver } from './drivers/epay.driver';
 import { UsdtCredentials, UsdtDriver } from './drivers/usdt.driver';
-import { FxQuote, FxService, minorUnits } from './fx.service';
+import { AbaKhqrCredentials, AbaKhqrDriver } from './drivers/aba-khqr.driver';
+import { formatAmount, FxQuote, FxService, minorUnits } from './fx.service';
 import { AuthedUser } from '../auth/auth.decorators';
 
 /**
@@ -67,6 +74,7 @@ export class PaymentsService {
     private readonly jeepay: JeepayDriver,
     private readonly epay: EpayDriver,
     private readonly usdt: UsdtDriver,
+    private readonly aba: AbaKhqrDriver,
     private readonly fx: FxService,
     private readonly config: ConfigService,
   ) {}
@@ -289,6 +297,10 @@ export class PaymentsService {
         await remember();
         return this.startUsdt(target, channel);
 
+      case 'aba_khqr':
+        await remember();
+        return this.startKhqr(target, channel);
+
       default:
         throw new BadRequestException(`不认识的支付驱动 ${channel.driver}`);
     }
@@ -479,6 +491,277 @@ export class PaymentsService {
         );
       throw new BadRequestException(`下单失败，已把款项退回余额：${err.message}`);
     }
+  }
+
+  // ---------- ABA KHQR（靠到账通知认单） ----------
+
+  /**
+   * 发起一笔 ABA 扫码收款。
+   *
+   * 收款码是固定的，每张单都一样 —— 能区分开两张单的**只有金额**。
+   * 所以这里给每张单分一个别人没占用的精确瑞尔数，然后等 Telegram 群里
+   * 那条到账通知报出同一个数。
+   *
+   * 同一张单重复发起会拿到**同一个金额**：用户刷新页面、切回来再看，
+   * 看到的必须是同一个数，不然他会以为要付两笔。
+   */
+  private async startKhqr(
+    target: PayTarget,
+    channel: { code: string; credentialsEncrypted: string; payCurrency: string | null; payRate: number | null },
+  ) {
+    const cred = decryptJson<AbaKhqrCredentials>(this.secret(), channel.credentialsEncrypted);
+    if (!cred.qrPayload) {
+      throw new BadRequestException('这个通道还没配收款码，先去后台补上');
+    }
+
+    const now = new Date();
+    const exist = await this.prisma.khqrIntent.findFirst({
+      where: {
+        refType: target.kind,
+        refNo: target.no,
+        status: KhqrIntentStatus.pending,
+        expiresAt: { gt: now },
+      },
+      orderBy: { id: 'desc' },
+    });
+    if (exist) return this.khqrPayload(exist, cred.qrPayload);
+
+    const currency = (channel.payCurrency || 'KHR').toUpperCase();
+    const quote = await this.fx.quoteFor(
+      target.amountCents,
+      target.currency,
+      currency,
+      channel.payRate,
+    );
+    if (!quote) {
+      throw new ServiceUnavailableException(
+        `暂时算不出这笔要付多少${this.fx.labelOf(currency)}（汇率取不到），过一会儿再试。`,
+      );
+    }
+    const base = Math.round(quote.amount * minorUnits(currency));
+
+    // 占用中的金额必须查全 —— 漏掉一个，两张单就分到同一个金额，
+    // 那一笔到账会对上其中一张，另一张的用户等于白付。
+    const pending = await this.prisma.khqrIntent.findMany({
+      where: {
+        channelCode: channel.code,
+        currency,
+        status: KhqrIntentStatus.pending,
+        expiresAt: { gt: now },
+      },
+      select: { amount: true },
+    });
+    const taken = new Set(pending.map((p) => p.amount));
+    let amount = this.aba.pickUniqueAmount(base, taken);
+
+    const minutes = Number(this.config.get('KHQR_EXPIRE_MINUTES') ?? 30);
+
+    // 上面那次「查已占用的再挑一个」挡不住并发：两个请求同时读到同一份列表
+    // 就可能挑到同一个数。activeKey 上有唯一索引，真撞了会抛 P2002，换一个重来。
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const intent = await this.prisma.khqrIntent.create({
+          data: {
+            intentNo: generateCode('KHQ'),
+            refType: target.kind,
+            refNo: target.no,
+            channelCode: channel.code,
+            amount,
+            currency,
+            activeKey: `${channel.code}:${currency}:${amount}`,
+            sourceAmountCents: target.amountCents,
+            sourceCurrency: target.currency as any,
+            expiresAt: new Date(Date.now() + minutes * 60_000),
+          },
+        });
+        return this.khqrPayload(intent, cred.qrPayload);
+      } catch (err: any) {
+        if (err?.code !== 'P2002') throw err;
+        this.logger.warn(`金额 ${amount} ${currency} 被别的单抢先占了，换一个`);
+        taken.add(amount);
+        amount = this.aba.pickUniqueAmount(base, taken);
+      }
+    }
+    throw new ServiceUnavailableException(
+      '同一时刻等待付款的单子太多，暂时分不出唯一金额。等几分钟再试，或者换个支付方式。',
+    );
+  }
+
+  private khqrPayload(
+    intent: { intentNo: string; amount: number; currency: string; expiresAt: Date },
+    qrPayload: string,
+  ) {
+    const label = this.fx.labelOf(intent.currency);
+    return {
+      kind: 'khqr' as const,
+      qrPayload,
+      amount: intent.amount,
+      amountText: formatAmount(intent.amount / minorUnits(intent.currency), intent.currency),
+      currency: intent.currency,
+      label,
+      intentNo: intent.intentNo,
+      expiresAt: intent.expiresAt,
+      notice:
+        `扫码之后要**手动输入金额**，而且必须是下面这个精确的数 —— ` +
+        `收款码是固定的，系统只能靠金额认出这笔是你的。多一${label}少一${label}都对不上。`,
+    };
+  }
+
+  /**
+   * 盯收款通知群。
+   *
+   * 每半分钟拉一次 Telegram。和盯链那个不一样，**没有待付款也要拉** ——
+   * 拉取本身就是在向 Telegram 确认「这些我读过了」，不拉的话更新会堆着，
+   * 而 Telegram 只保留 24 小时，堆过头就真丢了。
+   */
+  @Cron('*/30 * * * * *')
+  async watchKhqr() {
+    const channels = await this.prisma.payChannel.findMany({
+      where: { driver: 'aba_khqr', isEnabled: true },
+    });
+    if (channels.length === 0) return;
+
+    // 过期的先释放，把它们占着的金额还回池子
+    const expired = await this.prisma.khqrIntent.updateMany({
+      where: { status: KhqrIntentStatus.pending, expiresAt: { lte: new Date() } },
+      data: { status: KhqrIntentStatus.expired, activeKey: null },
+    });
+    if (expired.count) this.logger.log(`${expired.count} 笔扫码付款超时，金额已释放`);
+
+    for (const channel of channels) {
+      try {
+        await this.scanKhqrChannel(channel);
+      } catch (err: any) {
+        this.logger.warn(`读取通道 ${channel.code} 的到账通知失败，下一轮再试：${err.message}`);
+      }
+    }
+  }
+
+  private async scanKhqrChannel(channel: { code: string; credentialsEncrypted: string }) {
+    const cred = tryDecryptJson<AbaKhqrCredentials>(this.secret(), channel.credentialsEncrypted);
+    if (!cred?.botToken) return;
+
+    const key = `tg_offset:${channel.code}`;
+    const saved = await this.prisma.keyValue.findUnique({ where: { key } });
+    const offset = Number(saved?.value ?? 0) || 0;
+
+    const { notices, nextOffset } = await this.aba.fetchNotices(
+      cred.botToken,
+      offset,
+      cred.chatId,
+    );
+
+    // 偏移量先存再处理：万一处理到一半崩了，重启后重读会把同一条通知再算一遍。
+    // 那不会重复入账（txId 上有唯一约束，而且单据状态本身也是幂等的），
+    // 但会在日志里刷出一堆吓人的「认不出来的到账」。
+    if (nextOffset !== offset) {
+      await this.prisma.keyValue.upsert({
+        where: { key },
+        create: { key, value: String(nextOffset) },
+        update: { value: String(nextOffset) },
+      });
+    }
+
+    for (const n of notices) {
+      await this.matchKhqrNotice(channel.code, n);
+    }
+  }
+
+  /**
+   * 把一条到账通知配到某张单上。
+   *
+   * 配不上是**大事**：钱已经进了商户账户，而没有任何一张单会因此完成。
+   * 所以配不上一定要吼出来，并且把金额和流水号写进日志 —— 那是人工对账
+   * 唯一的线索。宁可吵，也不能让一笔真金白银悄悄消失。
+   */
+  private async matchKhqrNotice(
+    channelCode: string,
+    n: { amount: number; currency: string; txId: string; raw: string },
+  ) {
+    // 同一条通知重复出现（重启重读、Telegram 重发）不能入账两次
+    const dup = await this.prisma.khqrIntent.findUnique({ where: { txId: n.txId } });
+    if (dup) return;
+
+    // 先找还在等的。找不到再看看是不是**迟到的付款** —— 单子超时了人才付完，
+    // 扫码要手输金额，慢一点很正常。迟到的照样入账，但要留痕。
+    const now = new Date();
+    const pending = await this.prisma.khqrIntent.findFirst({
+      where: {
+        channelCode,
+        currency: n.currency,
+        amount: n.amount,
+        status: KhqrIntentStatus.pending,
+        expiresAt: { gt: now },
+      },
+      orderBy: { id: 'asc' },
+    });
+    const late = pending
+      ? null
+      : await this.prisma.khqrIntent.findFirst({
+          where: {
+            channelCode,
+            currency: n.currency,
+            amount: n.amount,
+            status: KhqrIntentStatus.expired,
+            updatedAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+          },
+          orderBy: { id: 'desc' },
+        });
+
+    const intent = pending ?? late;
+    if (!intent) {
+      this.logger.error(
+        `收到一笔认不出来的到账：${n.amount} ${n.currency}，流水号 ${n.txId}。` +
+          `钱已经进账户了但没有对应的单，需要人工处理。原文：${n.raw}`,
+      );
+      return;
+    }
+    if (late) {
+      this.logger.warn(
+        `${intent.refNo} 的付款迟到了（单子已超时），流水号 ${n.txId} —— 照常入账，但请留意`,
+      );
+    }
+
+    // 只有还没付过的才推进，避免并发下重复入账
+    const claimed = await this.prisma.khqrIntent.updateMany({
+      where: { id: intent.id, status: { not: KhqrIntentStatus.paid } },
+      data: {
+        status: KhqrIntentStatus.paid,
+        txId: n.txId,
+        rawNotice: n.raw,
+        paidAt: new Date(),
+        activeKey: null,
+      },
+    });
+    if (claimed.count === 0) return;
+
+    this.logger.log(`到账认出来了：${n.amount} ${n.currency} → ${intent.refNo}（流水 ${n.txId}）`);
+    await this.settle(intent.refType === 'order' ? 'order' : 'recharge', intent.refNo, {
+      channel: channelCode,
+      upstreamNo: n.txId,
+      amountCents: intent.sourceAmountCents,
+      raw: { source: 'aba_khqr_telegram', amount: n.amount, currency: n.currency, txId: n.txId },
+    });
+  }
+
+  /** 前端轮询这个看付款到了没 */
+  async khqrStatus(user: AuthedUser, intentNo: string) {
+    const i = await this.prisma.khqrIntent.findUnique({ where: { intentNo } });
+    if (!i) throw new NotFoundException('这笔收款不存在');
+    const owner =
+      i.refType === 'recharge'
+        ? (await this.prisma.rechargeOrder.findUnique({ where: { rechargeNo: i.refNo } }))?.userId
+        : (await this.prisma.order.findUnique({ where: { orderNo: i.refNo } }))?.userId;
+    if (owner !== user.id) throw new NotFoundException('这笔收款不存在');
+    return {
+      intentNo: i.intentNo,
+      status: i.status,
+      amount: i.amount,
+      currency: i.currency,
+      txId: i.txId,
+      paidAt: i.paidAt,
+      expiresAt: i.expiresAt,
+    };
   }
 
   // ---------- USDT ----------
@@ -1274,6 +1557,8 @@ export class PaymentsService {
         return this.epay.verifyCredentials({ ...cred, gatewayUrl });
       case 'usdt_trc20':
         return this.usdt.verifyCredentials(cred);
+      case 'aba_khqr':
+        return this.aba.verifyCredentials(cred);
       default:
         return { ok: false, message: `不认识的驱动 ${c.driver}` };
     }
@@ -1394,6 +1679,42 @@ export const DRIVER_SPECS: DriverSpec[] = [
     ],
   },
   {
+    driver: 'aba_khqr',
+    label: 'ABA 扫码（柬埔寨）',
+    hint:
+      '收款码固定、银行没有 API 的场景。面板盯着 PayWay 推到 Telegram 群里的到账通知，' +
+      '靠金额唯一认单 —— 每张单分一个别人没占用的精确瑞尔数。',
+    needsWayCode: false,
+    credentialFields: [
+      {
+        key: 'botToken',
+        label: 'Telegram bot token',
+        type: 'password',
+        required: true,
+        hint:
+          '找 @BotFather 建一个新 bot 拿到的那串。这个 bot 要拉进收款通知群，' +
+          '而且必须能读到群消息 —— BotFather 里 /setprivacy 设成 Disable，或者把它设成群管理员。' +
+          '别用已经设过 webhook 的 bot，那样一条消息也拉不到。',
+      },
+      {
+        key: 'chatId',
+        label: '群 ID',
+        type: 'text',
+        required: false,
+        hint:
+          '只认这个群的消息，强烈建议填 —— 不填的话，任何人把 bot 拉进另一个群、' +
+          '发一句格式对的话，就能骗到一笔入账。负数，形如 -1001234567890。',
+      },
+      {
+        key: 'qrPayload',
+        label: '固定收款码内容',
+        type: 'text',
+        required: true,
+        hint: '以 000201 开头的那一长串。付款页上「二维码内容」那一栏可以直接抄。',
+      },
+    ],
+  },
+  {
     driver: 'usdt_trc20',
     label: 'USDT（TRC20）',
     hint: '直接收到你自己的钱包地址，不需要任何商户账号。面板盯着链上，靠金额唯一认单。',
@@ -1456,7 +1777,7 @@ export interface ChannelInput {
   code: string;
   name: string;
   icon?: string;
-  driver: 'jeepay' | 'epay' | 'usdt_trc20' | 'balance' | 'manual';
+  driver: 'jeepay' | 'epay' | 'usdt_trc20' | 'aba_khqr' | 'balance' | 'manual';
   wayCode?: string;
   settleCurrency?: string;
   /** 顾客扫码时实际要输入的币种，如 KHR。留空 = 和面板计价币种一致 */

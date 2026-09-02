@@ -54,6 +54,12 @@ export class PaymentsController {
     return this.payments.payRecharge(user, no, body?.channel, ip);
   }
 
+  /** 前端轮询这个看扫码付款认出来没有 —— 靠金额认单，没有回调 */
+  @Get('khqr/:intentNo')
+  khqrStatus(@CurrentUser() user: AuthedUser, @Param('intentNo') no: string) {
+    return this.payments.khqrStatus(user, no);
+  }
+
   /** 前端轮询这个看 USDT 到账没有 —— 链上收款没有回调，只能问 */
   @Get('usdt/:intentNo')
   usdtStatus(@CurrentUser() user: AuthedUser, @Param('intentNo') no: string) {

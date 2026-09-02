@@ -20,6 +20,7 @@ import { parseProbeOutput } from '../src/providers/ssh-exec.util';
 import { JeepayDriver } from '../src/payments/drivers/jeepay.driver';
 import { EpayDriver } from '../src/payments/drivers/epay.driver';
 import { UsdtDriver } from '../src/payments/drivers/usdt.driver';
+import { AbaKhqrDriver } from '../src/payments/drivers/aba-khqr.driver';
 import { formatAmount, minorUnits, roundUpTo, stepFor } from '../src/payments/fx.service';
 
 let failed = 0;
@@ -346,6 +347,46 @@ console.log('\n[11] 汇率折算 —— 算少了是从商户口袋里出钱，�
 
   check('1 元 = 603 瑞尔', roundUpTo((100 / 100) * 602.77, stepFor('KHR')) === 603);
   check('50 元 = 30139 瑞尔', roundUpTo((5000 / 100) * 602.77, stepFor('KHR')) === 30139);
+}
+
+console.log('\n[12] 到账通知的解析 —— 认错了是凭空给人加钱，漏认了是钱进来没人管');
+{
+  const a = new AbaKhqrDriver();
+
+  // 真实样本（收款人姓名换成了占位符）
+  const real =
+    '៛604 paid by WeChat Settlement Hub (*ZMg) on Sep 02, 12:15 PM ' +
+    'via ABA KHQR (BLCBKHPPXXX) at TEST STORE. Trx. ID: 178832610926160, APV: 318305.';
+  const n = a.parseNotice(real);
+  check('认得出真实的到账通知', !!n);
+  check('金额解对了', n?.amount === 604, String(n?.amount));
+  check('币种解对了', n?.currency === 'KHR');
+  check('流水号解对了', n?.txId === '178832610926160');
+
+  // 带千分位的大额。去不掉逗号会解成 51 —— 少收三个数量级
+  const big = a.parseNotice(
+    '៛51,001 paid by Alipay CN Settlement Hub (*155) on Aug 28, 01:00 PM ' +
+    'via ABA KHQR (BLCB) at TEST STORE. Trx. ID: 178789682788725, APV: 922177.',
+  );
+  check('千分位不能把金额截断', big?.amount === 51001, String(big?.amount));
+
+  // 美元要换成美分；瑞尔不能乘 100
+  const usd = a.parseNotice('$12.34 paid by X on Sep 02 via ABA. Trx. ID: 999.');
+  check('美元换算成美分', usd?.amount === 1234 && usd?.currency === 'USD', String(usd?.amount));
+
+  // 群里的闲聊、没有流水号的消息，一律不能当成到账
+  check('闲聊不认', a.parseNotice('៛604 到账了吗') === null);
+  check('没有流水号不认', a.parseNotice('៛604 paid by X on Sep 02 via ABA.') === null);
+  check('没有金额不认', a.parseNotice('Trx. ID: 123456') === null);
+  check('空消息不炸', a.parseNotice('') === null);
+
+  // 唯一金额只能往上加 —— 往下减就是少收钱
+  check('没占用就用原数', a.pickUniqueAmount(604, new Set()) === 604);
+  check('被占了往上让', a.pickUniqueAmount(604, new Set([604, 605])) === 606);
+  check('绝不往下减', a.pickUniqueAmount(604, new Set([604])) > 604);
+  check('全占满了要报错，而不是发一个重复的出去', throws(() =>
+    a.pickUniqueAmount(604, new Set(Array.from({ length: 30 }, (_, k) => 604 + k))),
+  ));
 }
 
 console.log(failed === 0 ? '\n全部通过\n' : `\n有 ${failed} 项没过\n`);

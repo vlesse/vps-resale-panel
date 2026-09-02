@@ -13,6 +13,10 @@ export type PayInfo = {
   instructions?: string | null;
   /** 顾客扫码后要手动输入的当地币金额。收款码里不带金额时全靠它。 */
   payQuote?: FxQuote | null;
+  // ABA 扫码：固定收款码 + 唯一金额
+  amountText?: string;
+  currency?: string;
+  label?: string;
   // USDT
   address?: string;
   amount?: string;
@@ -171,6 +175,57 @@ export function PayPanel({ info }: { info: PayInfo }) {
             转账后不用做任何操作。系统每分钟扫一次链上记录，到账后这个页面会自动更新，
             通常一到三分钟（取决于波场网络的确认速度）。
           </p>
+        </div>
+      </Unit>
+    );
+  }
+
+  if (info.kind === 'khqr') {
+    return (
+      <Unit>
+        <PanelBar title="扫码付款" meta="收款码是固定的，靠金额认单" />
+        <div className="panelbody">
+          <div className="fxbox">
+            <div className="fxbox-k">扫码后请手动输入这个金额（必须完全一致）</div>
+            <div
+              className="row"
+              style={{ gap: 10, alignItems: 'baseline', marginTop: 6, flexWrap: 'wrap' }}
+            >
+              <span className="fxbox-v">{info.amountText}</span>
+              <span style={{ color: 'var(--accent-deep)', fontSize: 15 }}>
+                {info.label}
+                <span className="silk" style={{ marginLeft: 6 }}>{info.currency}</span>
+              </span>
+              <button
+                className="btn btn--sm"
+                onClick={() => copy('金额', String(info.amount ?? ''))}
+              >
+                {copied === '金额' ? '已复制' : '复制金额'}
+              </button>
+            </div>
+            <div className="hint" style={{ marginTop: 8 }}>
+              这个数字是给你这一笔单独分配的。多一个少一个都认不出来，请照抄。
+            </div>
+          </div>
+
+          <div className="pay-usdt" style={{ marginTop: 16 }}>
+            <Qr value={info.qrPayload ?? ''} size={200} />
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <p className="hint">
+                用支付软件扫这个码，然后把上面那个金额一位不差地输进去。
+                付款成功后页面会自动更新，通常半分钟到一分钟，不用手动刷新。
+              </p>
+              {info.expiresAt && (
+                <div className="silk" style={{ fontSize: 10, marginTop: 12 }}>
+                  这个金额为你保留到 {formatDate(info.expiresAt)}，过期后要重新发起
+                </div>
+              )}
+              <div className="well" style={{ marginTop: 12, wordBreak: 'break-all' }}>
+                <div className="ro-k">二维码内容</div>
+                <div className="data" style={{ fontSize: 11.5, marginTop: 6 }}>{info.qrPayload}</div>
+              </div>
+            </div>
+          </div>
         </div>
       </Unit>
     );
