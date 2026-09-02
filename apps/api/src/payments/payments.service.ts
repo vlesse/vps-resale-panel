@@ -638,7 +638,17 @@ export class PaymentsService {
     if (targets.length === 0) return;
 
     const summary: string[] = [];
+    // 一个通道这一轮已经连不上了，就别再拿剩下的单子去撞它。
+    //
+    // 网关整个宕掉的时候，每笔查单都要等满超时（15 秒）。十笔待付款就是两分半，
+    // 下一轮的定时任务已经又启动了，越堆越多。一个通道失败一次就够说明问题了。
+    const deadChannels = new Set<string>();
     for (const t of targets) {
+      const code = t.row.payChannel ?? '';
+      if (deadChannels.has(code)) {
+        summary.push(`${t.no}=跳过（这一轮通道已经连不上）`);
+        continue;
+      }
       try {
         const r = await this.askGateway(t.row.payChannel, {
           payOrderId: t.row.upstreamNo,
@@ -660,6 +670,7 @@ export class PaymentsService {
           });
         }
       } catch (err: any) {
+        deadChannels.add(code);
         summary.push(`${t.no}=查单出错(${err?.message ?? err})`);
       }
     }
