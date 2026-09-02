@@ -51,6 +51,15 @@ interface PayTarget {
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
 
+  /**
+   * 网关已经判了终局（关闭 / 撤销 / 失败 / 已退款）的单号。
+   *
+   * 只放内存里，不落库：进程重启后重新问一次没什么代价，而为它加一列
+   * 反而要多一个「什么时候该清掉」的问题。真正要挡的是「对着死单
+   * 每分钟撞一次撞一整天」。
+   */
+  private readonly closedAtGateway = new Set<string>();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly orders: OrdersService,
@@ -649,6 +658,8 @@ export class PaymentsService {
         summary.push(`${t.no}=跳过（这一轮通道已经连不上）`);
         continue;
       }
+      // 网关已经把这笔关掉了，再问一万遍也是同一个答案
+      if (this.closedAtGateway.has(t.no)) continue;
       try {
         const r = await this.askGateway(t.row.payChannel, {
           payOrderId: t.row.upstreamNo,
@@ -660,6 +671,12 @@ export class PaymentsService {
         const amt =
           r.amountCents != null ? `，网关记的金额 ${r.amountCents} ${r.raw?.currency ?? ''}` : '';
         summary.push(`${t.no}=${r.stateText}${amt}`);
+        // 3 支付失败 / 4 已撤销 / 5 已退款 / 6 订单关闭 —— 都是终局，不会再变了。
+        // 不记下来的话，一张死单会被每分钟问一次、连问一整天（窗口是 24 小时），
+        // 纯粹是拿别人的网关当沙包。
+        if (r.state != null && [3, 4, 5, 6].includes(r.state)) {
+          this.closedAtGateway.add(t.no);
+        }
         if (r.paid) {
           this.logger.warn(`${t.no} 网关说已支付，但我们没收到回调 —— 现在补上`);
           await this.settle(t.kind, t.no, {
