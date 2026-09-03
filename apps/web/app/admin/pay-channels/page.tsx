@@ -58,6 +58,8 @@ export default function PayChannels() {
   const [f, setF] = useState<Record<string, string>>({});
   const [editing, setEditing] = useState<string | null>(null);
   const [ef, setEf] = useState<Record<string, string>>({});
+  /** 编辑时明确要清空的凭据字段。「留空 = 不改」，所以清空得单独说。 */
+  const [clearing, setClearing] = useState<string[]>([]);
 
   const load = () =>
     api.get<Channel[]>('/api/admin/pay-channels').then(setRows).catch(() => undefined);
@@ -129,6 +131,7 @@ export default function PayChannels() {
       return;
     }
     setEditing(c.id);
+    setClearing([]);
     setEf({
       name: c.name,
       wayCode: c.wayCode ?? '',
@@ -149,8 +152,18 @@ export default function PayChannels() {
   const saveEdit = async (c: Channel) => {
     setFlash(null);
     try {
+      // 凭据：只把真填了的送过去。后端是「填了才改，留空不改」，
+      // 所以这里不能把空值也塞进去 —— 那会让人以为清空了，实际没有。
+      const credentials: Record<string, string> = {};
+      const spec = specs.find((x) => x.driver === c.driver);
+      for (const cf of spec?.credentialFields ?? []) {
+        const v = ef[`cred_${cf.key}`];
+        if (v && v.trim()) credentials[cf.key] = v.trim();
+      }
       await api.patch(`/api/admin/pay-channels/${c.id}`, {
         name: ef.name?.trim() || c.name,
+        ...(Object.keys(credentials).length ? { credentials } : {}),
+        ...(clearing.length ? { clearCredentials: clearing } : {}),
         wayCode: ef.wayCode?.trim() || null,
         payCurrency: ef.payCurrency?.trim() || null,
         payRate: ef.payRate?.trim() ? Number(ef.payRate) : null,
@@ -428,6 +441,64 @@ export default function PayChannels() {
                     </>
                   )}
                 </div>
+                {(specs.find((x) => x.driver === c.driver)?.credentialFields ?? []).length > 0 && (
+                  <>
+                    <div className="label" style={{ marginTop: 4 }}>凭据</div>
+                    <p className="hint" style={{ marginTop: 4 }}>
+                      <strong>留空 = 不改。</strong>只填你要换的那一项，其余的不会被动。
+                      要彻底清掉某一项，勾上它后面的「清空」。
+                    </p>
+                    <div className="grid2" style={{ marginTop: 8 }}>
+                      {(specs.find((x) => x.driver === c.driver)?.credentialFields ?? []).map((cf) => (
+                        <div className="field" key={cf.key}>
+                          <label className="label">
+                            {cf.label}
+                            <span className="silk">
+                              （当前：{c.credentialSummary[cf.label] ?? c.credentialSummary[cf.key] ?? '—'}）
+                            </span>
+                          </label>
+                          {cf.type === 'textarea' ? (
+                            <textarea
+                              className="textarea"
+                              style={{ minHeight: 80, fontFamily: 'var(--f-mono)', fontSize: 12 }}
+                              spellCheck={false}
+                              disabled={clearing.includes(cf.key)}
+                              {...eset(`cred_${cf.key}`)}
+                            />
+                          ) : (
+                            <input
+                              className="input"
+                              type={cf.type === 'password' ? 'password' : 'text'}
+                              autoComplete="off"
+                              spellCheck={false}
+                              placeholder="留空 = 不改"
+                              disabled={clearing.includes(cf.key)}
+                              {...eset(`cred_${cf.key}`)}
+                            />
+                          )}
+                          {!cf.required && (
+                            <label className="hint" style={{ marginTop: 6, cursor: 'pointer' }}>
+                              <input
+                                type="checkbox"
+                                checked={clearing.includes(cf.key)}
+                                onChange={(e) =>
+                                  setClearing(
+                                    e.target.checked
+                                      ? [...clearing, cf.key]
+                                      : clearing.filter((k) => k !== cf.key),
+                                  )
+                                }
+                                style={{ marginRight: 6 }}
+                              />
+                              清空这一项
+                            </label>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+
                 <div className="field">
                   <label className="label">给用户的说明</label>
                   <textarea className="textarea" style={{ minHeight: 80 }} {...eset('descText')} />

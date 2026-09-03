@@ -1622,8 +1622,13 @@ export class PaymentsService {
           ? { payCurrencyToGateway: !!dto.payCurrencyToGateway }
           : {}),
         ...(dto.gatewayUrl !== undefined ? { gatewayUrl: dto.gatewayUrl } : {}),
-        ...(dto.credentials
-          ? { credentialsEncrypted: encryptJson(this.secret(), dto.credentials) }
+        ...(dto.credentials || dto.clearCredentials?.length
+          ? {
+              credentialsEncrypted: encryptJson(
+                this.secret(),
+                this.mergeCredentials(existing.credentialsEncrypted, dto),
+              ),
+            }
           : {}),
         ...(dto.rate !== undefined ? { rate: dto.rate } : {}),
         ...(dto.usdToCnyRate !== undefined ? { usdToCnyRate: dto.usdToCnyRate } : {}),
@@ -1633,6 +1638,31 @@ export class PaymentsService {
       },
     });
     return dto.credentials ? { check: await this.verifyChannel(id) } : { ok: true };
+  }
+
+  /**
+   * 改凭据时把新填的**合到**旧的上面，而不是整体替换。
+   *
+   * 编辑一个已有通道时，管理员通常只想改其中一项（比如补一个推送密钥）。
+   * 整体替换的话，没填的那几项会被一并抹掉 —— 保存完通道就废了，
+   * 而且报错要等到下一个用户付款时才冒出来。
+   *
+   * 规则：**填了才改，留空就是不改**。真要清掉某一项，走 clearCredentials
+   * 显式说明 —— 「留空」和「清空」是两回事，不能靠猜。
+   */
+  private mergeCredentials(existingBlob: string, dto: Partial<ChannelInput>): Record<string, any> {
+    const old = tryDecryptJson<Record<string, any>>(this.secret(), existingBlob);
+    if (!old) {
+      // 解不开就只能拿新填的重建。旧的本来也已经用不了了。
+      this.logger.warn('旧凭据解不开（多半是换过 CREDENTIALS_SECRET），这次按新填的重建');
+    }
+    const merged: Record<string, any> = { ...(old ?? {}) };
+    for (const [k, v] of Object.entries(dto.credentials ?? {})) {
+      if (typeof v === 'string' && v.trim() === '') continue; // 留空 = 不改
+      merged[k] = typeof v === 'string' ? v.trim() : v;
+    }
+    for (const k of dto.clearCredentials ?? []) delete merged[k];
+    return merged;
   }
 
   async deleteChannel(id: bigint) {
@@ -1729,6 +1759,15 @@ export class PaymentsService {
     }
     if (driver === 'epay') {
       return { 商户ID: String(c.pid ?? '?'), 商户密钥: mask(c.key) };
+    }
+    if (driver === 'aba_khqr') {
+      const codes = this.aba.parseQrList(String(c.qrPayload ?? ''));
+      return {
+        收款码: codes.length ? `${codes.length} 个` : '未配置',
+        群ID: c.chatId ? String(c.chatId) : '未限定（不安全）',
+        botToken: c.botToken ? '已配置' : '未配置',
+        外部推送密钥: c.inboundSecret ? '已配置' : '未配置',
+      };
     }
     return {
       商户号: c.mchNo ?? '?',
@@ -1912,6 +1951,8 @@ export interface ChannelInput {
   payCurrencyToGateway?: boolean;
   gatewayUrl?: string;
   credentials?: Record<string, any>;
+  /** 要清空的凭据字段名。「留空 = 不改」，真想删得显式说。 */
+  clearCredentials?: string[];
   rate?: number;
   usdToCnyRate?: number;
   isEnabled?: boolean;
