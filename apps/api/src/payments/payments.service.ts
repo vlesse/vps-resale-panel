@@ -6,6 +6,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { timingSafeEqual } from 'crypto';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import {
   KhqrIntentStatus,
@@ -669,6 +670,7 @@ export class PaymentsService {
 
   private async scanKhqrChannel(channel: { code: string; credentialsEncrypted: string }) {
     const cred = tryDecryptJson<AbaKhqrCredentials>(this.secret(), channel.credentialsEncrypted);
+    // 没配 bot 就是走外部推送，这里没什么可拉的
     if (!cred?.botToken) return;
 
     const key = `tg_offset:${channel.code}`;
@@ -814,6 +816,42 @@ export class PaymentsService {
     }
     const r = await this.matchKhqrNotice(channelCode, n);
     return { ...r, parsed: { amount: n.amount, currency: n.currency, txId: n.txId } };
+  }
+
+  /**
+   * 外部程序推过来的一条到账通知。
+   *
+   * 存在的理由：Telegram 规定 **bot 收不到其他 bot 发的消息**，而银行的通知
+   * 恰恰是 PayWay 那个 bot 发的。我们自己的 bot 怎么配都读不到，只能让一个
+   * 读得到的程序（真人账号的 telethon 监听器就是）转一手。
+   *
+   * 这个口子等于收款入账的钥匙 —— 谁能调它，谁就能构造一条通知让面板加钱。
+   * 所以：必须配了密钥才开放，比较用定长比较，密钥不对一律当成不存在这个口子
+   * （返回 404 而不是 401，不给探测的人任何反馈）。
+   */
+  async submitInboundNotice(channelCode: string, secret: string, text: string) {
+    const channel = await this.prisma.payChannel.findUnique({ where: { code: channelCode } });
+    if (!channel || channel.driver !== 'aba_khqr' || !channel.isEnabled) {
+      throw new NotFoundException('没有这个收款通道');
+    }
+    const cred = tryDecryptJson<AbaKhqrCredentials>(this.secret(), channel.credentialsEncrypted);
+    const expected = cred?.inboundSecret ?? '';
+    if (!expected) throw new NotFoundException('没有这个收款通道');
+
+    const a = Buffer.from(String(secret ?? ''));
+    const b = Buffer.from(expected);
+    if (a.length !== b.length || !timingSafeEqual(a, b)) {
+      this.logger.warn(`通道 ${channelCode} 收到一条密钥不对的推送，已忽略`);
+      throw new NotFoundException('没有这个收款通道');
+    }
+
+    const n = this.aba.parseNotice(text ?? '');
+    if (!n) {
+      // 群里本来就有别的消息，转发方一股脑全发过来是正常的，不算错
+      return { ok: true, matched: false, message: '这条不是到账通知，已忽略' };
+    }
+    const r = await this.matchKhqrNotice(channelCode, n);
+    return { ...r, matched: true, parsed: { amount: n.amount, currency: n.currency, txId: n.txId } };
   }
 
   /** 前端轮询这个看付款到了没 */
@@ -1762,11 +1800,12 @@ export const DRIVER_SPECS: DriverSpec[] = [
         key: 'botToken',
         label: 'Telegram bot token',
         type: 'password',
-        required: true,
+        required: false,
         hint:
-          '找 @BotFather 建一个新 bot 拿到的那串。这个 bot 要拉进收款通知群，' +
-          '而且必须能读到群消息 —— BotFather 里 /setprivacy 设成 Disable，或者把它设成群管理员。' +
-          '别用已经设过 webhook 的 bot，那样一条消息也拉不到。',
+          '让面板自己去读群消息。**银行通知是 bot 发的（比如 PayWay by ABA）就别填这个** —— ' +
+          'Telegram 规定 bot 收不到其他 bot 的消息，管理员权限和隐私模式都绕不过去，' +
+          '填了也一条收不到，请改用下面的「外部推送密钥」。' +
+          '通知是真人发的才用得上：bot 要在群里、/setprivacy 设成 Disable、且没设过 webhook。',
       },
       {
         key: 'chatId',
@@ -1776,6 +1815,16 @@ export const DRIVER_SPECS: DriverSpec[] = [
         hint:
           '只认这个群的消息，强烈建议填 —— 不填的话，任何人把 bot 拉进另一个群、' +
           '发一句格式对的话，就能骗到一笔入账。负数，形如 -1001234567890。',
+      },
+      {
+        key: 'inboundSecret',
+        label: '外部推送密钥',
+        type: 'password',
+        required: false,
+        hint:
+          '银行通知由 bot 发出时走这条路：让一个读得到那个群的程序（真人账号的监听器）' +
+          '把通知原文 POST 到 /api/payments/khqr/<通道代码>/notice，body 里带 secret 和 text。' +
+          '**这个密钥等于收款入账的钥匙** —— 拿到它就能构造通知让面板加钱，要够长够随机。',
       },
       {
         key: 'qrPayload',

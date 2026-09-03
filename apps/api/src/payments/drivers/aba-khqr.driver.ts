@@ -25,8 +25,17 @@ import axios from 'axios';
  */
 
 export interface AbaKhqrCredentials {
-  /** BotFather 给的 token。这个 bot 要在收款通知群里，且能读到群消息。 */
-  botToken: string;
+  /**
+   * BotFather 给的 token，选填。
+   *
+   * **注意 Telegram 有一条绕不过去的规则：bot 收不到其他 bot 发的消息。**
+   * 银行的通知如果是某个 bot（比如 PayWay by ABA）发的，那么不管你把自己的 bot
+   * 设成管理员还是关掉隐私模式，都一条也收不到 —— 这条路直接是死的，
+   * 得改用下面的「外部推送」，或者让一个真人账号来读。
+   *
+   * 通知是**真人**发的（或者发在频道里）时，这条路才走得通。
+   */
+  botToken?: string;
   /** 只认这个群的消息。留空则不限（不建议 —— 别的群发一句就能骗到入账）。 */
   chatId?: string;
   /**
@@ -39,6 +48,19 @@ export interface AbaKhqrCredentials {
    * 而认单只看金额，跟用了哪个码无关。
    */
   qrPayload: string;
+  /**
+   * 外部推送用的密钥，选填。
+   *
+   * 配了之后，任何能读到那个群的程序（比如一个 telethon 真人账号监听器）
+   * 都可以把通知原文 POST 给面板，面板照样按金额认单。
+   *
+   * 这是为「银行通知由 bot 发出」准备的路子 —— 那种情况我们自己的 bot
+   * 永远读不到，只能让一个读得到的程序转一手。
+   *
+   * 这个密钥等于**收款入账的钥匙**：拿到它的人可以构造一条通知让面板加钱。
+   * 要够长够随机，而且只给那一个转发程序。
+   */
+  inboundSecret?: string;
 }
 
 /** 从一条到账通知里解出来的东西 */
@@ -178,7 +200,6 @@ export class AbaKhqrDriver {
   async verifyCredentials(
     cred: AbaKhqrCredentials,
   ): Promise<{ ok: boolean; message: string; detail?: Record<string, any> }> {
-    if (!cred.botToken) return { ok: false, message: '要填 Telegram bot 的 token' };
     const codes = this.parseQrList(cred.qrPayload);
     if (codes.length === 0) {
       return { ok: false, message: '要填固定收款码的内容（付款页上「二维码内容」那一长串）' };
@@ -188,6 +209,27 @@ export class AbaKhqrDriver {
       return {
         ok: false,
         message: `第 ${bad + 1} 个收款码看着不像 EMV 二维码（正常应该以 000201 开头）。多个码要一行一个。`,
+      };
+    }
+
+    // 两条进消息的路，至少得有一条
+    if (!cred.botToken && !cred.inboundSecret) {
+      return {
+        ok: false,
+        message:
+          '「bot token」和「外部推送密钥」至少要填一个 —— 不然面板没有任何办法知道钱到了。' +
+          '银行通知是 bot 发的（比如 PayWay by ABA）就只能用外部推送：' +
+          'Telegram 规定 bot 收不到其他 bot 的消息，这条限制绕不过去。',
+      };
+    }
+
+    if (!cred.botToken) {
+      return {
+        ok: true,
+        message:
+          `收款码 ${codes.length} 个（会轮流发）。走的是外部推送 —— ` +
+          `让能读到那个群的程序把通知原文 POST 到 /api/payments/khqr/<通道代码>/notice，` +
+          `body 里带上 secret 和 text 两个字段。`,
       };
     }
 
@@ -229,8 +271,8 @@ export class AbaKhqrDriver {
       ok: true,
       message:
         `Telegram 连通，bot 是 @${me.result?.username}，收款码 ${codes.length} 个（会轮流发）。` +
-        `还要确认两件事：这个 bot 已经在收款通知群里，而且能读到群消息` +
-        `（BotFather 里 /setprivacy 设成 Disable，或者把它设成群管理员）。`,
+        `还要确认：bot 在群里、隐私模式已关，而且**银行那条通知不是 bot 发的** —— ` +
+        `是 bot 发的话这条路收不到任何东西，得改用外部推送。`,
       detail: { bot: me.result?.username },
     };
   }

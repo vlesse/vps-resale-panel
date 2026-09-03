@@ -54,6 +54,25 @@ export class PaymentsController {
     return this.payments.payRecharge(user, no, body?.channel, ip);
   }
 
+  /**
+   * 外部程序把银行到账通知推过来。
+   *
+   * 必须是 @Public —— 推的是一个 telethon 监听器之类的东西，带不了登录令牌。
+   * 安全完全依赖通道上配的那个密钥，而那个密钥等于收款入账的钥匙。
+   * 密钥不对一律返回 404，不给探测的人任何反馈。
+   */
+  @Public()
+  @Post('khqr/:code/notice')
+  inboundNotice(
+    @Param('code') code: string,
+    @Body() body: { secret?: string; text?: string },
+    @Req() req: any,
+  ) {
+    // 密钥放 header 里更顺手，两种都收
+    const secret = body?.secret ?? req?.headers?.['x-panel-secret'] ?? '';
+    return this.payments.submitInboundNotice(code, String(secret), body?.text ?? '');
+  }
+
   /** 前端轮询这个看扫码付款认出来没有 —— 靠金额认单，没有回调 */
   @Get('khqr/:intentNo')
   khqrStatus(@CurrentUser() user: AuthedUser, @Param('intentNo') no: string) {
