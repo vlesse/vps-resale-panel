@@ -707,10 +707,16 @@ export class PaymentsService {
   private async matchKhqrNotice(
     channelCode: string,
     n: { amount: number; currency: string; txId: string; raw: string },
-  ) {
+  ): Promise<{ ok: boolean; message: string; refNo?: string }> {
     // 同一条通知重复出现（重启重读、Telegram 重发）不能入账两次
     const dup = await this.prisma.khqrIntent.findUnique({ where: { txId: n.txId } });
-    if (dup) return;
+    if (dup) {
+      return {
+        ok: true,
+        message: `这笔流水 ${n.txId} 之前已经处理过了（${dup.refNo}），没有重复入账`,
+        refNo: dup.refNo,
+      };
+    }
 
     // 先找还在等的。找不到再看看是不是**迟到的付款** —— 单子超时了人才付完，
     // 扫码要手输金额，慢一点很正常。迟到的照样入账，但要留痕。
@@ -744,7 +750,12 @@ export class PaymentsService {
         `收到一笔认不出来的到账：${n.amount} ${n.currency}，流水号 ${n.txId}。` +
           `钱已经进账户了但没有对应的单，需要人工处理。原文：${n.raw}`,
       );
-      return;
+      return {
+        ok: false,
+        message:
+          `没有哪张单在等 ${n.amount} ${n.currency}。` +
+          `可能是金额输错了、单子已经超过 24 小时，或者这笔本来就不是面板的订单。`,
+      };
     }
     if (late) {
       this.logger.warn(
@@ -763,7 +774,9 @@ export class PaymentsService {
         activeKey: null,
       },
     });
-    if (claimed.count === 0) return;
+    if (claimed.count === 0) {
+      return { ok: true, message: `${intent.refNo} 刚刚已经被另一条通知认领了`, refNo: intent.refNo };
+    }
 
     this.logger.log(`到账认出来了：${n.amount} ${n.currency} → ${intent.refNo}（流水 ${n.txId}）`);
     await this.settle(intent.refType === 'order' ? 'order' : 'recharge', intent.refNo, {
@@ -772,6 +785,35 @@ export class PaymentsService {
       amountCents: intent.sourceAmountCents,
       raw: { source: 'aba_khqr_telegram', amount: n.amount, currency: n.currency, txId: n.txId },
     });
+    return {
+      ok: true,
+      message: `${n.amount} ${n.currency} 已入账到 ${intent.refNo}${late ? '（迟到的付款）' : ''}`,
+      refNo: intent.refNo,
+    };
+  }
+
+  /**
+   * 手工录一条到账通知。
+   *
+   * 自动读取那条路总有断的时候 —— 群改了、bot 被踢了、Telegram 抽风。
+   * 断的时候钱照样在进账户，客服手里只有一条通知原文，得有地方能把它录进去。
+   *
+   * 走的是和自动匹配**完全同一段代码**：不能因为「手工」就绕开金额匹配和
+   * 幂等判断，那样迟早会出现手工入账和自动入账各加一次钱。
+   */
+  async adminSubmitNotice(channelCode: string, text: string) {
+    const channel = await this.prisma.payChannel.findUnique({ where: { code: channelCode } });
+    if (!channel || channel.driver !== 'aba_khqr') {
+      throw new BadRequestException('这个通道不是「靠到账通知认单」的类型');
+    }
+    const n = this.aba.parseNotice(text ?? '');
+    if (!n) {
+      throw new BadRequestException(
+        '这段文字里认不出金额或流水号。请把银行通知的原文整条贴进来，不要只贴一部分。',
+      );
+    }
+    const r = await this.matchKhqrNotice(channelCode, n);
+    return { ...r, parsed: { amount: n.amount, currency: n.currency, txId: n.txId } };
   }
 
   /** 前端轮询这个看付款到了没 */

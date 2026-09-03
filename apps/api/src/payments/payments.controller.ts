@@ -142,6 +142,18 @@ export class AdminPayChannelsController {
    * 我们这边余额没动，网关的原话能立刻分出是谁的问题。
    * 查到已支付会当场入账。
    */
+  /**
+   * 手工录一条银行到账通知。
+   *
+   * 自动读取那条路断掉的时候（群改了、bot 被踢了、Telegram 抽风），
+   * 钱照样在进账户 —— 得有地方能把手里那条通知原文录进去。
+   * 走的是和自动匹配同一段代码，不会绕开金额匹配和幂等判断。
+   */
+  @Post('khqr/:code/notice')
+  submitNotice(@Param('code') code: string, @Body() body: { text?: string }) {
+    return this.payments.adminSubmitNotice(code, body?.text ?? '');
+  }
+
   @Post('query/:kind/:no')
   queryGateway(@Param('kind') kind: string, @Param('no') no: string) {
     return this.payments.adminQueryGateway(kind === 'order' ? 'order' : 'recharge', no);

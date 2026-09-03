@@ -33,6 +33,8 @@ export default function AdminRecharges() {
   const [keyword, setKeyword] = useState('');
   const [flash, setFlash] = useState<{ tone: 'ok' | 'crit' | 'warn'; text: string } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [notice, setNotice] = useState('');
+  const [khqrChannel, setKhqrChannel] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const qs = new URLSearchParams({ pageSize: '50' });
@@ -43,7 +45,36 @@ export default function AdminRecharges() {
 
   useEffect(() => {
     void load().catch((e) => setFlash({ tone: 'crit', text: e.message }));
+    // 有「靠到账通知认单」的通道才显示手工录入那一块
+    api
+      .publicGet<{ code: string; driver: string }[]>('/api/payments/channels')
+      .then((cs) => setKhqrChannel(cs.find((c) => c.driver === 'aba_khqr')?.code ?? null))
+      .catch(() => undefined);
   }, [load]);
+
+  /**
+   * 手工录一条银行到账通知。
+   *
+   * 自动读取断了的时候钱照样在进账户，客服手里只有一条通知原文 ——
+   * 这里就是把它录进去的地方。走的是和自动匹配同一段代码。
+   */
+  const submitNotice = async () => {
+    if (!khqrChannel || !notice.trim()) return;
+    setBusy('notice');
+    setFlash(null);
+    try {
+      const r = await api.post<any>(`/api/admin/pay-channels/khqr/${khqrChannel}/notice`, {
+        text: notice,
+      });
+      setFlash({ tone: r.ok ? 'ok' : 'warn', text: r.message });
+      if (r.ok) setNotice('');
+      await load();
+    } catch (e: any) {
+      setFlash({ tone: 'crit', text: e.message });
+    } finally {
+      setBusy(null);
+    }
+  };
 
   /**
    * 反过来问支付网关这笔到底收到钱没有。
@@ -118,6 +149,36 @@ export default function AdminRecharges() {
           )}
         </div>
       </Unit>
+
+      {khqrChannel && (
+        <Unit>
+          <PanelBar title="手工录入到账通知" meta="自动读取断了的时候用这个，钱不会因此卡住" />
+          <div className="panelbody">
+            <p className="hint">
+              把银行那条通知的<strong>原文整条</strong>贴进来。走的是和自动匹配完全一样的逻辑 ——
+              按金额找那张在等的单，找到就入账，同一条流水不会入账两次。
+            </p>
+            <div className="field" style={{ marginTop: 12 }}>
+              <textarea
+                className="textarea"
+                style={{ minHeight: 80, fontSize: 12.5 }}
+                placeholder="៛604 paid by ... Trx. ID: 178839892411339, APV: 603131."
+                value={notice}
+                onChange={(e) => setNotice(e.target.value)}
+              />
+            </div>
+            <div className="btnrow" style={{ marginTop: 12 }}>
+              <button
+                className="btn btn--key btn--sm"
+                onClick={submitNotice}
+                disabled={busy === 'notice' || !notice.trim()}
+              >
+                {busy === 'notice' ? '处理中…' : '录入'}
+              </button>
+            </div>
+          </div>
+        </Unit>
+      )}
 
       <Unit>
         <div className="panelbody">
