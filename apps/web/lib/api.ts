@@ -236,6 +236,13 @@ export interface ServiceDetail extends ServiceItem {
   lastCheckedAt: string | null;
   /** 没有绑定机器时是 null —— 别当成「一台什么都不支持的机器」 */
   capabilities: { canPowerOn: boolean; canRebuild: boolean; hasMetrics: boolean } | null;
+  /**
+   * 无理由退货的窗口。
+   *
+   * enabled=false 表示本站没开这个功能，整块都不该出现；
+   * eligible=false 而 enabled=true 表示开了但这台已经过期或状态不对。
+   */
+  refundWindow: { enabled: boolean; eligible: boolean; secondsLeft: number; minutes: number };
   job: { id: string; kind: string; progress: number; step: string | null; status: string } | null;
   recentActions: {
     id: string;

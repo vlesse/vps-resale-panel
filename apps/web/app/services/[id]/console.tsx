@@ -16,7 +16,7 @@ import {
 } from '@/lib/api';
 import { Gauge, Led, Meter, Notice, PanelBar, Readout, Trace, Unit } from '@/components/ui';
 
-type Busy = null | 'start' | 'stop' | 'reboot' | 'reset' | 'rebuild' | 'refresh';
+type Busy = null | 'start' | 'stop' | 'reboot' | 'reset' | 'rebuild' | 'refresh' | 'refund';
 
 export function Console({ id }: { id: string }) {
   const router = useRouter();
@@ -25,7 +25,9 @@ export function Console({ id }: { id: string }) {
   const [flash, setFlash] = useState<{ tone: 'ok' | 'warn' | 'crit'; text: string } | null>(null);
   const [busy, setBusy] = useState<Busy>(null);
   const [confirmText, setConfirmText] = useState('');
-  const [confirmKind, setConfirmKind] = useState<null | 'rebuild'>(null);
+  const [confirmKind, setConfirmKind] = useState<null | 'rebuild' | 'refund'>(null);
+  /** 退货倒计时的秒数。每秒自减，归零就把入口收掉。 */
+  const [refundLeft, setRefundLeft] = useState<number | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [metrics, setMetrics] = useState<number[] | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -79,6 +81,21 @@ export function Console({ id }: { id: string }) {
       })
       .catch(() => setMetrics([]));
   }, [id, svc?.capabilities?.hasMetrics]);
+
+  // 退货倒计时。窗口很短（默认十分钟），得让用户看见还剩多久 ——
+  // 只写「十分钟内可退」，他没法知道自己还剩几分钟。
+  useEffect(() => {
+    const w = svc?.refundWindow;
+    if (!w?.eligible) {
+      setRefundLeft(null);
+      return;
+    }
+    setRefundLeft(w.secondsLeft);
+    const t = setInterval(() => {
+      setRefundLeft((n) => (n == null ? null : Math.max(0, n - 1)));
+    }, 1000);
+    return () => clearInterval(t);
+  }, [svc?.refundWindow]);
 
   const act = async (kind: Busy, path: string, body?: any) => {
     setBusy(kind);
@@ -310,6 +327,31 @@ export function Console({ id }: { id: string }) {
                 : '这台机器没有带外管理，关机之后没法远程开机，需要联系客服。'}
             </p>
 
+            {/* 无理由退货。只在窗口内出现 —— 过期了还摆在那，点了才被拒绝更气人。 */}
+            {svc.refundWindow?.eligible && refundLeft !== null && refundLeft > 0 && (
+              <div className="well" style={{ marginTop: 4 }}>
+                <div className="row" style={{ justifyContent: 'space-between', gap: 12 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ color: 'var(--ink)', fontSize: 14 }}>不满意可以直接退</div>
+                    <div className="hint" style={{ marginTop: 4 }}>
+                      交付后 {svc.refundWindow.minutes} 分钟内无理由退货，还剩{' '}
+                      <strong className="data">
+                        {Math.floor(refundLeft / 60)}:{String(refundLeft % 60).padStart(2, '0')}
+                      </strong>
+                      。退款回到账户余额，机器会被销毁。
+                    </div>
+                  </div>
+                  <button
+                    className="btn btn--sm"
+                    disabled={!!busy || !!jobPending}
+                    onClick={() => setConfirmKind('refund')}
+                  >
+                    申请退货
+                  </button>
+                </div>
+              </div>
+            )}
+
             <button
               className="btn btn--sm"
               disabled={busy === 'refresh'}
@@ -337,6 +379,33 @@ export function Console({ id }: { id: string }) {
         <Unit>
           <div className="panelbody">
             <Notice tone={flash.tone}>{flash.text}</Notice>
+          </div>
+        </Unit>
+      )}
+
+      {/* 退货确认。不要求抄编号 —— 这是个「拿回钱」的动作，
+          误触的代价用户自己承担，一个明确的弹窗就够了。 */}
+      {confirmKind === 'refund' && (
+        <Unit>
+          <div className="panelbody">
+            <h3 className="title" style={{ color: 'var(--crit)' }}>确认退货</h3>
+            <div style={{ margin: '12px 0' }}>
+              <Notice tone="crit">
+                这台机器会被<strong>立刻销毁</strong>，上面的数据全部消失且无法恢复。
+                货款会退回你的<strong>账户余额</strong>（不原路退回银行卡），可以用来重新下单。
+                这个操作不能撤销，退了就得重新买。
+              </Notice>
+            </div>
+            <div className="btnrow">
+              <button
+                className="btn btn--danger"
+                disabled={busy === 'refund'}
+                onClick={() => act('refund', 'refund')}
+              >
+                {busy === 'refund' ? '处理中…' : '确认退货并销毁机器'}
+              </button>
+              <button className="btn" onClick={() => setConfirmKind(null)}>再想想</button>
+            </div>
           </div>
         </Unit>
       )}
@@ -518,6 +587,8 @@ const ACTION_LABEL: Record<string, string> = {
   stop: '关机',
   reboot: '重启',
   reset_password: '重置密码',
+  refund: '退货',
+  release: '销毁',
   rebuild: '重装系统',
   sync_metrics: '同步监控',
 };

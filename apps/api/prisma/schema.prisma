@@ -111,6 +111,8 @@ enum ServiceActionType {
   reset_password
   rebuild
   sync_metrics
+  refund
+  release
 }
 
 enum ServiceActionStatus {

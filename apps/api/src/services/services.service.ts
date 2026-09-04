@@ -10,16 +10,19 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import {
   JobKind,
   MachineStatus,
+  OrderStatus,
   Prisma,
   ServiceActionStatus,
   ServiceActionType,
   ServiceStatus,
   UserRole,
+  WalletTxType,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProviderRegistry } from '../providers/provider.registry';
 import { encryptJson, generatePassword } from '../crypto/crypto.util';
 import { ProvisionQueueService } from '../provisioning/provisioning.processor';
+import { WalletService } from '../wallet/wallet.service';
 import { AuthedUser } from '../auth/auth.decorators';
 
 /**
@@ -37,7 +40,14 @@ export class ServicesService {
     private readonly registry: ProviderRegistry,
     private readonly config: ConfigService,
     private readonly queue: ProvisionQueueService,
+    private readonly wallet: WalletService,
   ) {}
+
+  /** 无理由退货的时限，从机器交付那一刻算起 */
+  private refundWindowMinutes(): number {
+    const n = Number(this.config.get('REFUND_WINDOW_MINUTES') ?? 10);
+    return Number.isFinite(n) && n >= 0 ? n : 10;
+  }
 
   // ---------- 查询 ----------
 
@@ -133,6 +143,9 @@ export class ServicesService {
     return {
       ...this.toListItem(service),
       deliver: this.deliverFor(actor, service),
+      // 还能不能退货、还剩多久。前端拿它画倒计时，也拿它决定按钮显不显示 ——
+      // 让人点了才被拒绝，比压根不显示更让人恼火。
+      refundWindow: this.refundWindow(service),
       liveStatus: status,
       statusError,
       lastCheckedAt: service.lastCheckedAt,
@@ -325,6 +338,148 @@ export class ServicesService {
       ok: true,
       message: '重装已开始，大约需要 1 到 3 分钟。完成后这个页面会显示新的登录密码。',
       jobId: job.id.toString(),
+    };
+  }
+
+  // ---------- 无理由退货 ----------
+
+  /**
+   * 这台机器现在还能不能退，以及还剩多久。
+   *
+   * 给前端画倒计时用。窗口过了就别再显示那个按钮 —— 让用户点了才被拒绝，
+   * 比一开始就不显示更让人恼火。
+   */
+  refundWindow(service: { status: ServiceStatus; startAt: Date | null; createdAt: Date }) {
+    const minutes = this.refundWindowMinutes();
+    if (minutes <= 0) return { enabled: false, eligible: false, secondsLeft: 0, minutes };
+    // 从交付那一刻算，不是下单那一刻 —— 建机要花一两分钟，
+    // 从下单算等于把试用时间偷偷扣掉一截。
+    const from = service.startAt ?? service.createdAt;
+    const deadline = from.getTime() + minutes * 60_000;
+    const secondsLeft = Math.max(0, Math.floor((deadline - Date.now()) / 1000));
+    const eligible = service.status === ServiceStatus.active && secondsLeft > 0;
+    return { enabled: true, eligible, secondsLeft, minutes };
+  }
+
+  /**
+   * 用户自助退货：销毁机器，钱退回账户余额。
+   *
+   * 几条底线：
+   *
+   * - **只退一次**。靠订单状态上的条件更新兜底，不是靠先查再改 ——
+   *   用户连点两下、或者两个标签页各点一次，先查后改会退两笔钱出去。
+   * - **先断访问再退钱**。顺序反过来的话，中间那段时间用户既拿着钱
+   *   又用着机器。所以先尽力关机、把服务标成已取消，最后才入队真删。
+   * - **退到余额，不原路退回**。ABA 扫码、线下转账这些通道压根没有退款接口，
+   *   假装能原路退只会变成一堆客服工单。页面上写清楚就行。
+   * - 建机还没完成的不让退。那时候云上可能已经有一台在计费的机器了，
+   *   而我们还没拿到它的标识 —— 这时候删是删不干净的。
+   */
+  async refund(actor: AuthedUser, id: bigint) {
+    const service = await this.load(actor, id);
+
+    const win = this.refundWindow(service);
+    if (!win.enabled) throw new BadRequestException('本站没有开放无理由退货');
+    if (service.status === ServiceStatus.provisioning) {
+      throw new BadRequestException('机器还在开通中，等它开通完成再退');
+    }
+    if (service.status !== ServiceStatus.active) {
+      throw new BadRequestException(`当前状态是「${service.status}」，不能退货`);
+    }
+    if (!win.eligible) {
+      throw new BadRequestException(
+        `无理由退货只在交付后 ${win.minutes} 分钟内有效，这台已经超过了。有问题请联系客服。`,
+      );
+    }
+
+    const order = await this.prisma.order.findUniqueOrThrow({ where: { id: service.orderId } });
+    if (order.status === OrderStatus.refunded) {
+      throw new BadRequestException('这笔订单已经退过款了');
+    }
+    const walletCurrency = this.wallet.currency();
+    if (order.currency !== walletCurrency) {
+      throw new BadRequestException(
+        `这笔订单按 ${order.currency} 计价，而账户余额是 ${walletCurrency} 的，` +
+          `自助退款会牵扯汇率换算。请联系客服处理。`,
+      );
+    }
+
+    // 只退一次的闸门：条件更新，抢到的那个才继续往下走
+    const claimed = await this.prisma.order.updateMany({
+      where: { id: order.id, status: { not: OrderStatus.refunded } },
+      data: { status: OrderStatus.refunded },
+    });
+    if (claimed.count === 0) throw new BadRequestException('这笔订单已经退过款了');
+
+    // 先断访问。关机失败不影响后面的流程 —— 反正马上就要整台删掉了，
+    // 但能早关一秒是一秒。
+    if (service.machine) {
+      const driver = this.registry.get(service.machine.provider);
+      const ctx = this.registry.contextFor(service.machine, service.machine.cloudAccount);
+      await driver
+        .stop(ctx)
+        .catch((err) => this.logger.warn(`退货时关机失败（不影响销毁）：${err.message}`));
+    }
+    await this.prisma.service.update({
+      where: { id: service.id },
+      data: { status: ServiceStatus.cancelled, suspendReason: '用户自助退货' },
+    });
+
+    // 退钱。走到这里订单已经被标成 refunded 了，所以入账失败必须吼出来 ——
+    // 那意味着用户机器没了、钱也没回来。
+    let balanceAfter: number | null = null;
+    try {
+      balanceAfter = await this.wallet.credit(service.userId, order.amountCents, {
+        type: WalletTxType.refund,
+        refType: 'order',
+        refNo: order.orderNo,
+        remark: `退货：${service.plan?.name ?? ''} ${service.serviceNo}`.trim(),
+      });
+    } catch (err: any) {
+      this.logger.error(
+        `订单 ${order.orderNo} 已标记退款但退钱失败，必须人工补：${err?.message ?? err}`,
+      );
+      throw new BadRequestException(
+        '退款没能入账，机器不会被销毁。请联系客服处理，把订单号给客服即可。',
+      );
+    }
+
+    // 最后才真删。前面几步都成功了，这一步失败也只是留一台待清理的机器，
+    // 会在后台的失败任务里露头，不会让用户白白损失。
+    let jobId: string | null = null;
+    if (service.machine) {
+      const job = await this.prisma.provisionJob.create({
+        data: {
+          kind: JobKind.release,
+          serviceId: service.id,
+          machineId: service.machine.id,
+          step: '排队中',
+        },
+      });
+      await this.queue.enqueue(job.id);
+      jobId = job.id.toString();
+    }
+
+    await this.prisma.serviceAction.create({
+      data: {
+        serviceId: service.id,
+        actorType: actor.role === UserRole.admin ? 'admin' : 'user',
+        actorId: actor.id,
+        action: ServiceActionType.refund,
+        status: ServiceActionStatus.queued,
+        requestJson: { orderNo: order.orderNo, amountCents: order.amountCents },
+      },
+    });
+
+    this.logger.log(
+      `退货：${service.serviceNo} 退回 ${(order.amountCents / 100).toFixed(2)} 到用户 ${service.userId} 的余额`,
+    );
+    return {
+      ok: true,
+      message: `已退款 ${(order.amountCents / 100).toFixed(2)}，钱已经回到你的账户余额。机器正在销毁。`,
+      refundedCents: order.amountCents,
+      balanceAfterCents: balanceAfter,
+      jobId,
     };
   }
 

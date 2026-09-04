@@ -11,6 +11,7 @@ const TABS = [
   ['/admin/cloud-accounts', '云账号'],
   ['/admin/plans', '套餐'],
   ['/admin/machines', '机器'],
+  ['/admin/services', '已交付'],
   ['/admin/nat', 'NAT 入口'],
   ['/admin/orders', '订单'],
   ['/admin/recharges', '充值'],
