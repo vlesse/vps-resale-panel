@@ -16,7 +16,16 @@ import {
 } from '@/lib/api';
 import { Gauge, Led, Meter, Notice, PanelBar, Readout, Trace, Unit } from '@/components/ui';
 
-type Busy = null | 'start' | 'stop' | 'reboot' | 'reset' | 'rebuild' | 'refresh' | 'refund';
+type Busy =
+  | null
+  | 'start'
+  | 'stop'
+  | 'reboot'
+  | 'reset'
+  | 'rebuild'
+  | 'refresh'
+  | 'refund'
+  | 'destroy';
 
 export function Console({ id }: { id: string }) {
   const router = useRouter();
@@ -25,7 +34,7 @@ export function Console({ id }: { id: string }) {
   const [flash, setFlash] = useState<{ tone: 'ok' | 'warn' | 'crit'; text: string } | null>(null);
   const [busy, setBusy] = useState<Busy>(null);
   const [confirmText, setConfirmText] = useState('');
-  const [confirmKind, setConfirmKind] = useState<null | 'rebuild' | 'refund'>(null);
+  const [confirmKind, setConfirmKind] = useState<null | 'rebuild' | 'refund' | 'destroy'>(null);
   /** 退货倒计时的秒数。每秒自减，归零就把入口收掉。 */
   const [refundLeft, setRefundLeft] = useState<number | null>(null);
   const [showPassword, setShowPassword] = useState(false);
@@ -109,6 +118,24 @@ export function Console({ id }: { id: string }) {
     } catch (e: any) {
       setFlash({ tone: 'crit', text: e.message });
     } finally {
+      setBusy(null);
+      setConfirmKind(null);
+      setConfirmText('');
+    }
+  };
+
+  /**
+   * 销毁不走 act()：成功之后这台机器已经不在「我的机器」里了，
+   * 再刷新这个页面只会看到一台状态是「已销毁」的空壳。直接回列表页。
+   */
+  const destroy = async () => {
+    setBusy('destroy');
+    setFlash(null);
+    try {
+      await api.post(`/api/services/${id}/destroy`, { confirm: confirmText });
+      router.push('/dashboard');
+    } catch (e: any) {
+      setFlash({ tone: 'crit', text: e.message });
       setBusy(null);
       setConfirmKind(null);
       setConfirmText('');
@@ -352,6 +379,32 @@ export function Console({ id }: { id: string }) {
               </div>
             )}
 
+            {/* 销毁入口。和上面的电源按钮隔开放 —— 那一排是天天点的，
+                这个点一次机器就没了，混在一起迟早出事。 */}
+            {svc.status !== 'cancelled' && svc.status !== 'provisioning' && (
+              <div className="well" style={{ marginTop: 4 }}>
+                <div className="row" style={{ justifyContent: 'space-between', gap: 12 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ color: 'var(--ink)', fontSize: 14 }}>不要这台机器了</div>
+                    <div className="hint" style={{ marginTop: 4 }}>
+                      销毁会把它从云平台上真正删掉，数据找不回来。
+                      <strong>不退款</strong>，剩余时间也不折算。
+                    </div>
+                  </div>
+                  <button
+                    className="btn btn--sm btn--danger"
+                    disabled={!!busy || !!jobPending}
+                    onClick={() => {
+                      setConfirmKind('destroy');
+                      setConfirmText('');
+                    }}
+                  >
+                    销毁
+                  </button>
+                </div>
+              </div>
+            )}
+
             <button
               className="btn btn--sm"
               disabled={busy === 'refresh'}
@@ -405,6 +458,68 @@ export function Console({ id }: { id: string }) {
                 {busy === 'refund' ? '处理中…' : '确认退货并销毁机器'}
               </button>
               <button className="btn" onClick={() => setConfirmKind(null)}>再想想</button>
+            </div>
+          </div>
+        </Unit>
+      )}
+
+      {/* 销毁确认。要抄 DELETE：退货那个不用抄字是因为点错了钱会回来，
+          这个点错了机器就没了，还不退钱，门槛必须高一道。 */}
+      {confirmKind === 'destroy' && (
+        <Unit>
+          <div className="panelbody">
+            <h3 className="title" style={{ color: 'var(--crit)' }}>确认销毁这台机器</h3>
+            <div style={{ margin: '12px 0' }}>
+              <Notice tone="crit">
+                {svc.planName} {svc.serviceNo} 会从云平台上<strong>真正删除</strong> ——
+                系统盘、数据、IP 全部消失，无法恢复也无法找回。
+                销毁之后它会从「我的机器」里移除。
+                <strong>这个操作不退款</strong>，剩余的 {svc.daysLeft} 天不折算。
+              </Notice>
+            </div>
+            {svc.refundWindow?.eligible && refundLeft !== null && refundLeft > 0 && (
+              <div style={{ marginBottom: 12 }}>
+                <Notice tone="warn">
+                  等一下 —— 你还在退货期内（还剩{' '}
+                  <strong className="data">
+                    {Math.floor(refundLeft / 60)}:{String(refundLeft % 60).padStart(2, '0')}
+                  </strong>
+                  ）。想把钱拿回来就点上面的「申请退货」，那个同样会销毁机器，
+                  但货款会退回你的账户余额。这里点下去钱就没了。
+                </Notice>
+              </div>
+            )}
+            <div className="field" style={{ maxWidth: 380 }}>
+              <label className="label">
+                请输入 <span className="data">DELETE</span> 以确认
+              </label>
+              <input
+                className="input"
+                value={confirmText}
+                onChange={(e) => setConfirmText(e.target.value)}
+                placeholder="DELETE"
+                autoComplete="off"
+                autoCapitalize="off"
+                spellCheck={false}
+              />
+            </div>
+            <div className="btnrow">
+              <button
+                className="btn btn--danger"
+                disabled={confirmText.trim().toUpperCase() !== 'DELETE' || busy === 'destroy'}
+                onClick={destroy}
+              >
+                {busy === 'destroy' ? '销毁中…' : '确认销毁'}
+              </button>
+              <button
+                className="btn"
+                onClick={() => {
+                  setConfirmKind(null);
+                  setConfirmText('');
+                }}
+              >
+                取消
+              </button>
             </div>
           </div>
         </Unit>

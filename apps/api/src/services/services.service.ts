@@ -483,6 +483,101 @@ export class ServicesService {
     };
   }
 
+  // ---------- 自助销毁 ----------
+
+  /** 自助销毁要抄的确认词。选它是因为够短、够醒目，而且不可能手滑打对。 */
+  private static readonly DESTROY_WORD = 'DELETE';
+
+  /**
+   * 用户自己把机器销毁掉。**不退钱**。
+   *
+   * 和退货是两码事，别混：退货是「买错了，钱还我」，只在交付后那几分钟内成立；
+   * 销毁是「我不要了，现在就停」，什么时候都能做，但钱不退。
+   *
+   * 所以两边的确认门槛是反的 —— 退货不用抄字（点错了无非是钱回到余额），
+   * 销毁必须抄一遍 DELETE（点错了机器就没了，补不回来）。
+   *
+   * 做完之后这台会从「我的机器」里消失（那个列表本来就不列已销毁的），
+   * 云厂商那边是真删不是关机 —— 关机的机器很多平台照样收硬盘钱。
+   */
+  async destroy(actor: AuthedUser, id: bigint, confirm: string) {
+    const service = await this.load(actor, id);
+
+    if (confirm.trim().toUpperCase() !== ServicesService.DESTROY_WORD) {
+      throw new BadRequestException(
+        `销毁不可恢复，机器和上面的数据都会没有，而且不退款。` +
+          `确认请在输入框里填 ${ServicesService.DESTROY_WORD}。`,
+      );
+    }
+    if (service.status === ServiceStatus.cancelled) {
+      throw new BadRequestException('这台机器已经销毁过了');
+    }
+    if (service.status === ServiceStatus.provisioning) {
+      throw new BadRequestException(
+        '机器还在开通中，等它开通完再销毁 —— 现在删多半删不干净，云上那台会继续计费。',
+      );
+    }
+    if (service.status === ServiceStatus.suspended) {
+      // 停用是管理员出手拦下来的（多半是违规），这时候让用户自己把机器抹掉
+      // 等于把现场清了。要销毁走客服。
+      throw new ForbiddenException('这台机器已被管理员停用，销毁请联系客服');
+    }
+    const machine = this.requireMachine(service);
+
+    // 有任务在跑就别插队。重装跑到一半把机器删了，那个任务会对着一台
+    // 不存在的机器抛一串看不懂的错，还得人工去收拾。
+    const running = await this.prisma.provisionJob.findFirst({
+      where: { serviceId: id, status: { in: ['queued', 'running'] } },
+    });
+    if (running) throw new BadRequestException('这台机器有任务正在跑，等它结束再销毁');
+
+    // 只销毁一次的闸门：条件更新，抢到的才往下走。连点两下、或者两个标签页
+    // 各点一次，第二下在这里就被挡住了 —— 否则会入两个销毁任务，
+    // 第二个对着已经没了的机器报错。
+    const claimed = await this.prisma.service.updateMany({
+      where: { id: service.id, status: { not: ServiceStatus.cancelled } },
+      data: { status: ServiceStatus.cancelled, suspendReason: '用户自助销毁' },
+    });
+    if (claimed.count === 0) throw new BadRequestException('这台机器已经销毁过了');
+
+    // 先关机再入队。真删要排队，排队这段时间机器开着就还在烧钱。
+    const driver = this.registry.get(machine.provider);
+    const ctx = this.registry.contextFor(machine, machine.cloudAccount);
+    await driver
+      .stop(ctx)
+      .catch((err) => this.logger.warn(`销毁前关机失败（不影响销毁）：${err.message}`));
+
+    const job = await this.prisma.provisionJob.create({
+      data: {
+        kind: JobKind.release,
+        serviceId: service.id,
+        machineId: machine.id,
+        step: '排队中',
+      },
+    });
+    await this.queue.enqueue(job.id);
+
+    await this.prisma.serviceAction.create({
+      data: {
+        serviceId: service.id,
+        actorType: actor.role === UserRole.admin ? 'admin' : 'user',
+        actorId: actor.id,
+        action: ServiceActionType.release,
+        status: ServiceActionStatus.queued,
+        requestJson: { jobId: job.id.toString(), selfService: true, refunded: false },
+      },
+    });
+
+    this.logger.log(
+      `用户自助销毁：${service.serviceNo}（${machine.provider} ${machine.code}），不退款`,
+    );
+    return {
+      ok: true,
+      message: '已提交销毁。机器正在从云平台上删除，它已经从你的机器列表里移除了。',
+      jobId: job.id.toString(),
+    };
+  }
+
   // ---------- 管理员专用 ----------
 
   async suspend(actor: AuthedUser, id: bigint, reason: string) {

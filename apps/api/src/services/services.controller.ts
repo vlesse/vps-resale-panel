@@ -58,6 +58,21 @@ export class ServicesController {
     return this.services.refund(user, BigInt(id));
   }
 
+  /**
+   * 自助销毁：机器从云平台上真删，**不退钱**。
+   *
+   * 要抄 DELETE 才放行。和上面的退货正好相反 —— 退货是把钱拿回来，
+   * 点错了没损失；销毁点错了机器就没了，所以门槛要高一道。
+   */
+  @Post(':id/destroy')
+  destroy(
+    @CurrentUser() user: AuthedUser,
+    @Param('id') id: string,
+    @Body() body: { confirm: string },
+  ) {
+    return this.services.destroy(user, BigInt(id), body?.confirm ?? '');
+  }
+
   /** 重装要把机器编号原样抄一遍，防误触 —— 这一步会清空整块盘 */
   @Post(':id/rebuild')
   rebuild(
