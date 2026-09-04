@@ -31,9 +31,13 @@ services:
       MYSQL_USER: vps
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
     ports:
-      # 只绑本机回环地址。这样你能在服务器上直接 mysql -h127.0.0.1 进去排查，
-      # 但公网扫不到这个端口。千万别改成 0.0.0.0:3306。
-      - '127.0.0.1:3306:3306'
+      # 只绑本机回环地址。这样你能在服务器上直接 mysql -h127.0.0.1 -P13306
+      # 进去排查，但公网扫不到这个端口。千万别改成 0.0.0.0。
+      #
+      # 用 13306 而不是 3306：服务器上很可能已经装了系统自带的 mysql/mariadb，
+      # 那个占着 3306，撞上了整个栈都起不来（报 address already in use）。
+      # 容器之间是走 compose 网络按服务名连的，跟这里映射到哪个端口没关系。
+      - '127.0.0.1:13306:3306'
     volumes:
       - mysql-data:/var/lib/mysql
     healthcheck:
