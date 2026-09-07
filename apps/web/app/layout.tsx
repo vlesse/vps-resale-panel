@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
 import { Nav } from '@/components/nav';
+import { SiteNotice } from '@/components/site-notice';
 
 export const metadata: Metadata = {
   title: {
@@ -35,11 +36,19 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <span className="blob blob--5" />
         </div>
 
+        <SiteNotice />
+
         <Nav />
         <div className="rack">{children}</div>
 
         <footer className="foot">
           <span>RenrenYings Cloud</span>
+          {/*
+            备份手册在页脚留一个常驻入口。弹窗点掉之后就没了，
+            而用户真正想起「我该备份了」的时候，往往是几周以后 ——
+            那时候得有个地方能找回这份说明。
+          */}
+          <a href="/help/backup">备份手册</a>
           <span className="spacer" />
           <span>云服务器 · 东京 / 新加坡 / 洛杉矶</span>
         </footer>

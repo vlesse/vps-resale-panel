@@ -1511,3 +1511,170 @@ h1.title {
     justify-content: center;
   }
 }
+
+/* ---------- 开站提示弹窗 ---------- */
+
+/*
+  遮罩故意做得比较实（不是若有若无的一层灰）—— 这个弹窗说的是
+  「你的数据会被清空」，不该让人一眼扫过去就点掉。
+*/
+.modalwrap {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(46, 34, 44, 0.42);
+  backdrop-filter: blur(3px);
+  animation: modalfade 0.18s ease-out;
+  overflow-y: auto;
+}
+
+.modal {
+  width: 100%;
+  max-width: 540px;
+  margin: auto;
+  background: #fffdfe;
+  border: 1px solid var(--hairline-2);
+  border-radius: 14px;
+  box-shadow: 0 24px 60px -20px rgba(60, 40, 56, 0.45);
+  animation: modalrise 0.2s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+
+.modal__head {
+  padding: 18px 22px 0;
+}
+
+.modal__title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--ink);
+}
+
+.modal__body {
+  padding: 12px 22px 4px;
+  font-size: 13.5px;
+  line-height: 1.75;
+  color: var(--ink-2);
+}
+
+.modal__body p {
+  margin: 0 0 11px;
+}
+
+.modal__lead {
+  color: var(--ink);
+}
+
+.modal__lead strong {
+  color: var(--crit);
+}
+
+/* 备份那一块要跳出来 —— 它是这个弹窗唯一希望用户去做的事 */
+.modal__key {
+  margin: 14px 0 13px;
+  padding: 13px 15px;
+  border: 1px solid var(--brass-soft);
+  border-left: 3px solid var(--brass);
+  border-radius: 9px;
+  background: var(--brass-soft);
+}
+
+.modal__keytitle {
+  margin-bottom: 5px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.modal__key p {
+  margin-bottom: 10px;
+}
+
+.modal__contact {
+  padding-top: 11px;
+  border-top: 1px solid var(--hairline);
+  font-size: 12.5px;
+}
+
+.modal__link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.modal__link:hover {
+  color: var(--accent-deep);
+}
+
+.modal__foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 14px 22px 18px;
+  border-top: 1px solid var(--hairline);
+}
+
+@keyframes modalfade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes modalrise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* 动画敏感的人直接给最终状态，别让弹窗飘 */
+@media (prefers-reduced-motion: reduce) {
+  .modalwrap,
+  .modal {
+    animation: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .modal__head { padding: 16px 16px 0; }
+  .modal__body { padding: 10px 16px 2px; }
+  .modal__foot { padding: 12px 16px 16px; }
+}
+
+/* ---------- 帮助页里的命令块 ---------- */
+
+/*
+  用户是要整段复制走的，所以：不换行、自己横向滚动。
+  换行看着舒服，但复制出来会多出断行，粘到终端里就是一条跑不动的命令。
+*/
+.cmd {
+  margin: 0;
+  padding: 11px 13px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: rgba(72, 52, 68, 0.045);
+  font-family: var(--f-mono);
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--ink);
+  white-space: pre;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(72, 52, 68, 0.07);
+  font-family: var(--f-mono);
+  font-size: 0.92em;
+}
+
+/* 命令块里已经是等宽底色了，里面的 code 不用再套一层 */
+.cmd code {
+  padding: 0;
+  background: none;
+}

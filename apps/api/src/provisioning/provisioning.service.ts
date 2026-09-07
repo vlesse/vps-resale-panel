@@ -383,6 +383,10 @@ export class ProvisioningService {
             plan: { include: { cloudAccount: true } },
             machine: {
               include: {
+                // 机器自己挂的云账号才是它真正所在的那个项目。
+                // 换货源之后套餐会改指向新账号，但老机器还躺在旧项目里 ——
+                // 这里取错的话，重装会拿新账号的凭据去操作旧项目的实例。
+                cloudAccount: true,
                 natBinding: {
                   include: { gateway: { select: { publicHost: true } } },
                 },
@@ -418,7 +422,11 @@ export class ProvisioningService {
 
     const password = generatePassword(16);
     const keypair = generateSshKeyPair(`panel-${machine.code}`);
-    const ctx = this.registry.contextFor(machine, plan.cloudAccount);
+    // 优先用机器自己的账号，套餐上那个只是兜底（老数据可能没挂）。
+    // 三个月换一次货源的场景下这两个会不一样：套餐已经指向新账号，
+    // 而老机器还在旧项目里。取错了报的是「权限不足」，
+    // 跟真正的原因八竿子打不着，排查起来很费劲。
+    const ctx = this.registry.contextFor(machine, machine.cloudAccount ?? plan.cloudAccount);
 
     // 重装要落回原来那个私网地址：端口映射是照地址写的，
     // 换个地址等于把买家保存的连接方式作废掉。
